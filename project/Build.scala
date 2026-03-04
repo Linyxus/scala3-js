@@ -1692,8 +1692,8 @@ object Build {
             val path = f.getAbsolutePath
             val isOverride = path.startsWith(overrideBase.getAbsolutePath)
             !isOverride && (
-              path.contains("/backend/jvm/") ||
-              path.contains("/backend\\jvm\\") ||
+              ((path.contains("/backend/jvm/") || path.contains("/backend\\jvm\\"))
+                && f.getName != "DottyPrimitives.scala") || // DottyPrimitives needed by JSPrimitives
               path.contains("/scripting/") ||
               path.contains("/debug/")
             )
