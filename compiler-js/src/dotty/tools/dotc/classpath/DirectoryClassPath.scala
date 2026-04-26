@@ -108,11 +108,13 @@ object JrtClassPath {
 
 case class DirectoryClassPath(dir: JFile) extends JFileDirectoryLookup[BinaryFileEntry] with NoSourcePaths {
 
-  def findClassFile(className: String): Option[AbstractFile] = {
+  def findClassFileAndModuleFile(className: String, findModule: Boolean): Option[(AbstractFile, Option[AbstractFile])] = {
     val relativePath = FileUtils.dirPath(className)
     val classFile = new JFile(dir, relativePath + ".class")
-    if classFile.exists then Some(classFile.toPath.toPlainFile)
-    else None
+    if classFile.exists then {
+      val moduleFile = Option.when(findModule)(new JFile(dir, "module-info.class")).filter(_.exists)
+      Some(classFile.toPath.toPlainFile, moduleFile.map(_.toPath.toPlainFile))
+    } else None
   }
 
   protected def createFileEntry(file: AbstractFile): BinaryFileEntry = BinaryFileEntry(file)

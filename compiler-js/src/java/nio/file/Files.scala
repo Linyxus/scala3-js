@@ -11,7 +11,8 @@ import java.util.stream
 object Files {
   private def toFile(path: Path): java.io.File = new java.io.File(path.toString)
 
-  def exists(path: Path, options: LinkOption*): Boolean = toFile(path).exists
+  def exists(path: Path | Null, options: LinkOption*): Boolean =
+    path != null && toFile(path).exists
   def notExists(path: Path, options: LinkOption*): Boolean = !toFile(path).exists
   def isDirectory(path: Path, options: LinkOption*): Boolean = toFile(path).isDirectory
   def isRegularFile(path: Path, options: LinkOption*): Boolean = toFile(path).isFile

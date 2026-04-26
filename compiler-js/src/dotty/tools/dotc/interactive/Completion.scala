@@ -305,7 +305,7 @@ object Completion:
     !valid
   end needsBacktick
 
-  private lazy val keywords = Tokens.keywords.map(Tokens.tokenString)
+  private lazy val keywords = Tokens.keywords.map(kw => Tokens.tokenString(kw).nn)
 
   /**
    * Return the list of code completions with descriptions based on a mapping from names to the denotations they refer to.

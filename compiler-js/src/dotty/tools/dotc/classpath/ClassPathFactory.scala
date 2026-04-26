@@ -44,11 +44,11 @@ class ClassPathFactory {
     val files = for {
       file <- expandPath(path, expand)
       dir <- {
-        def asImage = if (file.endsWith(".jimage")) Some(AbstractFile.getFile(file)) else None
+        def asImage = if (file.endsWith(".jimage")) Some(AbstractFile.getFile(file).nn) else None
         Option(AbstractFile.getDirectory(file)).orElse(asImage)
       }
     }
-    yield dir
+    yield dir.nn
 
     val expanded =
       if false then /* scala.util.Properties not available on Scala.js */
@@ -58,7 +58,7 @@ class ClassPathFactory {
           path = java.nio.file.Paths.get(a.toURI.toString)
           if Files.exists(path)
         yield
-          newClassPath(AbstractFile.getFile(path))
+          newClassPath(AbstractFile.getFile(path).nn)
       else
         Seq.empty
 
