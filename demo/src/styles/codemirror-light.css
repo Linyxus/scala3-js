@@ -1,0 +1,35 @@
+/* Light-theme overrides for CodeMirror 6.
+   The bulk of the theme is set in src/ui/Editor.ts via EditorView.theme(),
+   but the lint diagnostics popup is unstyled by default; tweak it here. */
+
+.cm-editor {
+  height: 100%;
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+}
+
+.cm-editor.cm-focused {
+  outline: none;
+}
+
+.cm-tooltip.cm-tooltip-lint {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  color: var(--text);
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  max-width: 480px;
+}
+
+.cm-diagnostic {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.cm-diagnostic-error { border-left: 3px solid var(--err); padding-left: 8px; }
+.cm-diagnostic-warning { border-left: 3px solid var(--warn); padding-left: 8px; }
+.cm-diagnostic-info { border-left: 3px solid var(--accent); padding-left: 8px; }
