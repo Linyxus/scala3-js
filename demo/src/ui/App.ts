@@ -10,7 +10,6 @@ import { extractMainName } from '../util/extractMain';
 import { createEditor, type EditorHandle } from './Editor';
 import { createToolbar, type ToolbarHandle } from './Toolbar';
 import { createOutputPanel, type OutputPanelHandle } from './OutputPanel';
-import { createLoader } from './Loader';
 import { defaultExample, examples } from '../examples';
 
 type Status = 'loading' | 'ready' | 'compiling' | 'error';
@@ -26,21 +25,21 @@ export function mountApp(root: HTMLElement): void {
   main.className = 'app-main';
   root.appendChild(main);
 
-  const loader = createLoader(main);
+  const playground = buildPlayground(main, header);
 
   loadCompiler({
-    onJs: (l, t) => loader.rowJs.setProgress(l, t),
-    onCp: (l, t) => loader.rowCp.setProgress(l, t),
-    onLl: (l, t) => loader.rowLl.setProgress(l, t),
+    onJs: (l, t) => playground.toolbar.setLoadingProgress('js', l, t),
+    onCp: (l, t) => playground.toolbar.setLoadingProgress('cp', l, t),
+    onLl: (l, t) => playground.toolbar.setLoadingProgress('ll', l, t),
   })
     .then(() => {
-      loader.remove();
       header.setStatus('ready');
-      buildPlayground(main, header);
+      playground.toolbar.setReady();
     })
     .catch((err) => {
+      const msg = `${err?.message ?? err}`;
       header.setStatus('error');
-      loader.setError(`${err?.message ?? err}`);
+      playground.toolbar.setError(msg);
     });
 }
 
@@ -118,7 +117,11 @@ async function loadCompiler(hooks: CompilerLoadHooks): Promise<void> {
   compilerApi.loadLinkerLibs(llBuf);
 }
 
-function buildPlayground(main: HTMLElement, header: HeaderHandle): void {
+interface PlaygroundHandle {
+  toolbar: ToolbarHandle;
+}
+
+function buildPlayground(main: HTMLElement, header: HeaderHandle): PlaygroundHandle {
   let toolbar: ToolbarHandle | null = null;
   let editor: EditorHandle | null = null;
   let output: OutputPanelHandle | null = null;
@@ -170,11 +173,7 @@ function buildPlayground(main: HTMLElement, header: HeaderHandle): void {
         toolbar.setSelected('custom');
       }
     },
-    onCompile: () => runAction('compile'),
-    onRun: () => runAction('run'),
   });
-
-  toolbar.setEnabled(true);
 
   function runAction(mode: Mode): void {
     if (!editor || !output || !toolbar) return;
@@ -216,7 +215,7 @@ function buildPlayground(main: HTMLElement, header: HeaderHandle): void {
     } else {
       output.setOutput({
         logs: [],
-        placeholder: 'Compiled cleanly. Press ⌘↵ to run.',
+        placeholder: 'Compiled cleanly. Click Run to execute.',
       });
       output.focus('output');
     }
@@ -267,4 +266,6 @@ function buildPlayground(main: HTMLElement, header: HeaderHandle): void {
     output?.focus('output');
     header.setStatus('error');
   });
+
+  return { toolbar };
 }

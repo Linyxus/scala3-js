@@ -56,8 +56,6 @@ export interface EditorOptions {
   parent: HTMLElement;
   initialDoc: string;
   onChange?: (doc: string) => void;
-  onCompile?: () => void;
-  onRun?: () => void;
 }
 
 export interface EditorHandle {
@@ -68,25 +66,6 @@ export interface EditorHandle {
 }
 
 export function createEditor(opts: EditorOptions): EditorHandle {
-  const userKeymap = keymap.of([
-    {
-      key: 'Mod-Enter',
-      preventDefault: true,
-      run: () => {
-        opts.onRun?.();
-        return true;
-      },
-    },
-    {
-      key: 'Mod-Shift-Enter',
-      preventDefault: true,
-      run: () => {
-        opts.onCompile?.();
-        return true;
-      },
-    },
-  ]);
-
   const extensions: Extension[] = [
     lineNumbers(),
     foldGutter(),
@@ -99,7 +78,6 @@ export function createEditor(opts: EditorOptions): EditorHandle {
     StreamLanguage.define(scala),
     lintGutter(),
     keymap.of([...defaultKeymap, ...historyKeymap, ...foldKeymap, indentWithTab]),
-    userKeymap,
     lightTheme,
     EditorView.updateListener.of((update) => {
       if (update.docChanged && opts.onChange) {

@@ -284,22 +284,6 @@ button {
   border-color: var(--accent-hover);
 }
 
-.btn__kbd {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: rgb(255 255 255 / 18%);
-  color: inherit;
-  border: 1px solid rgb(255 255 255 / 10%);
-}
-
-.btn:not(.btn--primary) .btn__kbd {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-}
-
 /* ------------------------------ Editor ------------------------------ */
 
 .editor-pane {
@@ -476,59 +460,30 @@ button {
 .ansi-bright-white { color: var(--ansi-bright-white); }
 .ansi-bold { font-weight: 600; }
 
-/* ------------------------------ Loader card ------------------------------ */
+/* --------------------- Inline compiler-load progress --------------------- */
 
-.loader-card {
-  margin: 32px auto;
-  padding: 26px 28px;
-  max-width: 520px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
-}
-
-.loader-card__title {
-  font-size: 16px;
-  font-weight: 600;
-  margin: 0 0 4px;
-}
-
-.loader-card__subtitle {
+.toolbar-loader {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   font-size: 13px;
   color: var(--text-muted);
-  margin: 0 0 22px;
 }
 
-.loader-card__bars {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+.toolbar-loader__label {
+  white-space: nowrap;
 }
 
-.loader-row {
-  display: grid;
-  grid-template-columns: 110px 1fr 90px;
-  align-items: center;
-  gap: 12px;
-}
-
-.loader-row__label {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-muted);
-  text-align: right;
-}
-
-.loader-row__bar {
-  height: 8px;
+.toolbar-loader__bar {
+  width: 140px;
+  height: 6px;
   background: var(--surface-2);
   border-radius: 999px;
   overflow: hidden;
   position: relative;
 }
 
-.loader-row__fill {
+.toolbar-loader__fill {
   height: 100%;
   width: 0;
   background: linear-gradient(90deg, var(--accent), #7c3aed);
@@ -536,22 +491,15 @@ button {
   transition: width 0.15s ease;
 }
 
-.loader-row__pct {
+.toolbar-loader__pct {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-muted);
+  min-width: 40px;
+  text-align: right;
 }
 
-.loader-card__error {
-  margin-top: 18px;
-  padding: 12px 14px;
-  border-radius: var(--radius-sm);
-  background: var(--err-soft);
+.toolbar-loader__error {
   color: var(--err);
   font-size: 13px;
-  display: none;
-}
-
-.loader-card__error[data-visible='true'] {
-  display: block;
 }
