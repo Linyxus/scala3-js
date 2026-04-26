@@ -123,8 +123,24 @@ function buildPlayground(main: HTMLElement, header: HeaderHandle): void {
   let editor: EditorHandle | null = null;
   let output: OutputPanelHandle | null = null;
 
+  // Two-column workspace: editor (left) + output (right)
+  const workspace = document.createElement('div');
+  workspace.className = 'workspace';
+  main.appendChild(workspace);
+
+  // Editor pane — toolbar lives inline as its header
+  const editorPane = document.createElement('section');
+  editorPane.className = 'editor-pane';
+  const editorHeading = document.createElement('div');
+  editorHeading.className = 'editor-pane__heading';
+  editorPane.appendChild(editorHeading);
+  const editorMount = document.createElement('div');
+  editorMount.className = 'editor-pane__cm';
+  editorPane.appendChild(editorMount);
+  workspace.appendChild(editorPane);
+
   toolbar = createToolbar({
-    parent: main,
+    parent: editorHeading,
     onSelectExample(ex) {
       editor?.setDoc(ex.source);
       editor?.setDiagnostics([]);
@@ -133,22 +149,6 @@ function buildPlayground(main: HTMLElement, header: HeaderHandle): void {
       runAction(mode);
     },
   });
-
-  // Two-column workspace: editor (left) + output (right)
-  const workspace = document.createElement('div');
-  workspace.className = 'workspace';
-  main.appendChild(workspace);
-
-  // Editor pane
-  const editorPane = document.createElement('section');
-  editorPane.className = 'editor-pane';
-  const editorHeading = document.createElement('div');
-  editorHeading.className = 'editor-pane__heading';
-  editorHeading.innerHTML = `<span class="editor-pane__file">Main.scala</span>`;
-  const editorMount = document.createElement('div');
-  editorMount.className = 'editor-pane__cm';
-  editorPane.append(editorHeading, editorMount);
-  workspace.appendChild(editorPane);
 
   const initialEx = examples.find((e) => e.id === defaultExample) ?? examples[0];
   toolbar.setSelected(initialEx.id);

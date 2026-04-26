@@ -167,8 +167,7 @@ button {
 .app-main {
   flex: 1;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 14px;
+  grid-template-rows: minmax(0, 1fr);
   padding: 14px 22px 22px;
   min-height: 0;
 }
@@ -194,11 +193,6 @@ button {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
 }
 
 .toolbar__group {
@@ -321,9 +315,8 @@ button {
 }
 
 .editor-pane__heading {
-  padding: 8px 14px;
-  font-size: 12px;
-  font-weight: 500;
+  padding: 10px 14px;
+  font-size: 13px;
   color: var(--text-muted);
   border-bottom: 1px solid var(--border);
   background: var(--surface);
@@ -332,9 +325,9 @@ button {
   gap: 8px;
 }
 
-.editor-pane__file {
-  font-family: var(--font-mono);
-  color: var(--text);
+.editor-pane__heading > .toolbar {
+  flex: 1;
+  margin: 0;
 }
 
 .editor-pane__cm {
