@@ -1,0 +1,27 @@
+{
+  "name": "scala3-playground",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/link-artifacts.mjs",
+    "dev": "vite",
+    "prebuild": "node scripts/link-artifacts.mjs",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "link-artifacts": "node scripts/link-artifacts.mjs"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.6.0",
+    "@codemirror/language": "^6.10.2",
+    "@codemirror/legacy-modes": "^6.4.0",
+    "@codemirror/lint": "^6.8.1",
+    "@codemirror/state": "^6.4.1",
+    "@codemirror/view": "^6.28.0",
+    "codemirror": "^6.0.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vite": "^5.4.0"
+  }
+}

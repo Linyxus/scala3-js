@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.vite/
+
+# Playwright debug artifacts
+screenshots/
+
+# Compiler artifacts symlinked in by scripts/link-artifacts.mjs
+public/main.js
+public/main.js.map
+public/classpath.bin
+public/linker-libs.bin

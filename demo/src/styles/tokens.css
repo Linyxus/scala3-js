@@ -1,0 +1,59 @@
+:root {
+  /* Surfaces */
+  --bg: #fafaf9;
+  --surface: #ffffff;
+  --surface-2: #f3f4f6;
+  --surface-3: #e7e9ec;
+
+  /* Borders */
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+
+  /* Text */
+  --text: #111827;
+  --text-muted: #6b7280;
+  --text-soft: #9ca3af;
+
+  /* Brand */
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef2ff;
+  --accent-text: #ffffff;
+
+  /* Diagnostics */
+  --err: #b91c1c;
+  --err-soft: #fee2e2;
+  --warn: #b45309;
+  --warn-soft: #fef3c7;
+  --ok: #15803d;
+  --ok-soft: #dcfce7;
+
+  /* Sizing */
+  --radius: 10px;
+  --radius-sm: 6px;
+  --radius-lg: 14px;
+  --shadow-sm: 0 1px 2px rgb(15 23 42 / 6%);
+  --shadow-md: 0 4px 16px rgb(15 23 42 / 8%);
+  --shadow-lg: 0 12px 36px rgb(15 23 42 / 10%);
+
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* ANSI palette (light-friendly) */
+  --ansi-black: #1f2937;
+  --ansi-red: #b91c1c;
+  --ansi-green: #15803d;
+  --ansi-yellow: #a16207;
+  --ansi-blue: #1d4ed8;
+  --ansi-magenta: #a21caf;
+  --ansi-cyan: #0e7490;
+  --ansi-white: #4b5563;
+  --ansi-bright-red: #dc2626;
+  --ansi-bright-green: #16a34a;
+  --ansi-bright-yellow: #ca8a04;
+  --ansi-bright-blue: #2563eb;
+  --ansi-bright-magenta: #c026d3;
+  --ansi-bright-cyan: #0891b2;
+  --ansi-bright-white: #6b7280;
+}
