@@ -1283,7 +1283,7 @@ extends SyntaxMsg(ExpectedTokenButFoundID):
   def explain(using Context) = s"The soft keyword `$soft` has special meaning only in certain contexts."
 end ExpectedTokenButFoundSoftKeyword
 
-class MixedLeftAndRightAssociativeOps(op1: Name, op2: Name, op2LeftAssoc: Boolean)(using Context)
+class MixedLeftAndRightAssociativeOps(op1: Name, op2: Name | Null, op2LeftAssoc: Boolean)(using Context)
 extends SyntaxMsg(MixedLeftAndRightAssociativeOpsID) {
   def msg(using Context) =
     val op1Asso: String = if (op2LeftAssoc) "which is right-associative" else "which is left-associative"
@@ -2134,11 +2134,6 @@ class TraitIsExpected(symbol: Symbol)(using Context) extends SyntaxMsg(TraitIsEx
   }
 }
 
-class TraitRedefinedFinalMethodFromAnyRef(method: Symbol)(using Context) extends SyntaxMsg(TraitRedefinedFinalMethodFromAnyRefID) {
-  def msg(using Context) = i"Traits cannot redefine final $method from ${hl("class AnyRef")}."
-  def explain(using Context) = ""
-}
-
 class AlreadyDefined(name: Name, owner: Symbol, conflicting: Symbol, addingCaptureSet: Boolean = false)(using Context)
 extends NamingMsg(AlreadyDefinedID):
   private def isCaptureConflict = addingCaptureSet || Feature.ccEnabled && conflicting.isDummyCaptureParam
@@ -2462,6 +2457,12 @@ extends NamingMsg(DoubleDefinitionID):
             i"have the same$nameAnd type $erasedType after erasure.$hint"
         }
       }
+      else if decl.is(CaseAccessor) || previousDecl.is(CaseAccessor) then
+        val selector = """_(\d+)""".r
+        decl.name.toString match
+          case selector(n) =>
+            s"${decl.name} is a case element selector and must name the ${n}th element"
+          case _ => ""
       else ""
     def symLocation(sym: Symbol) = {
       val lineDesc =
@@ -2868,29 +2869,6 @@ class IllegalRedefinitionOfStandardKind(kindType: String, name: Name)(using Cont
         | Please choose a different name to avoid conflicts
         |"""
 }
-
-class NoExtensionMethodAllowed(mdef: untpd.DefDef)(using Context)
-  extends SyntaxMsg(NoExtensionMethodAllowedID) {
-  def msg(using Context) = i"No extension method allowed here, since collective parameters are given"
-  def explain(using Context) =
-    i"""|Extension method:
-        |  `${mdef}`
-        |is defined inside an extension clause which has collective parameters.
-        |"""
-}
-
-class ExtensionMethodCannotHaveTypeParams(mdef: untpd.DefDef)(using Context)
-  extends SyntaxMsg(ExtensionMethodCannotHaveTypeParamsID) {
-  def msg(using Context) = i"Extension method cannot have type parameters since some were already given previously"
-
-  def explain(using Context) =
-    i"""|Extension method:
-        |  `${mdef}`
-        |has type parameters `[${mdef.leadingTypeParams.map(_.show).mkString(",")}]`, while the extension clause has
-        |it's own type parameters. Please consider moving these to the extension clause's type parameter list.
-        |"""
-}
-
 class ExtensionCanOnlyHaveDefs(mdef: untpd.Tree)(using Context)
   extends SyntaxMsg(ExtensionCanOnlyHaveDefsID) {
   def msg(using Context) = i"Only methods allowed here, since collective parameters are given"
@@ -3714,7 +3692,8 @@ class UnnecessaryNN(reason: String, sourcePosition: SourcePosition)(using Contex
 
   override def explain(using Context) = ""
 
-  private val nnSourcePosition = SourcePosition(sourcePosition.source, Span(sourcePosition.span.end, sourcePosition.span.end + 3, sourcePosition.span.end), sourcePosition.outer)
+  private val nnSourcePosition =
+    sourcePosition.withSpan(Span(sourcePosition.span.end, sourcePosition.span.end + 3, sourcePosition.span.end))
 
   override def actions(using Context) =
     List(
@@ -3817,26 +3796,27 @@ final class CannotBeIncluded(
 
     def needsUseStr =
       if target.isAlwaysEmpty && (targetOwner.isClass || targetOwner.isConstructor) then
-        val (uses, loc) =
+        val (suffix, loc) =
           if targetOwner.isClass
-          then ("uses", targetOwner)
-          else ("uses_init", targetOwner.owner)
+          then ("", targetOwner)
+          else (" initially", targetOwner.owner)
+        def useStr(c: Capability) = c.showAsCapability ++ suffix
         val usedStr = added match
-          case added: Capability => i"${added.showAsCapability}"
-          case added: CaptureSet => i"${added.elems.toList.map(_.showAsCapability).mkString(", ")}"
+          case added: Capability => i"${useStr(added)}"
+          case added: CaptureSet => i"${added.elems.toList.map(useStr).mkString(", ")}"
 
         if loc.isPackageObject then
           i"""
             |
-            |The top-level definitions should be wrapped in an object with a $uses clause:
+            |The top-level definitions should be wrapped in an object with a uses clause:
             |
-            |    $uses $usedStr"""
+            |    uses $usedStr"""
         else
           i"""
             |
-            |External uses should be declared explicitly with a $uses clause in $loc:
+            |External uses should be declared explicitly with a uses clause in $loc:
             |
-            |    $uses $usedStr"""
+            |    uses $usedStr"""
       else ""
 
     def notesStr: String = notes.map(_.render).mkString
@@ -3852,6 +3832,7 @@ final class CannotBeIncluded(
         || realTarget.description.nonEmpty
         || target.description.isEmpty && provenance.isEmpty
       then realTarget
+      else if realTarget.isConst && !target.isConst then target.asVar.withElems(realTarget.elems)
       else target
     val provenanceStr: String =
       if shownTarget.description.isEmpty then provenance else ""
