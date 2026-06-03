@@ -80,6 +80,17 @@ for asset in "${ASSETS[@]}"; do
 done
 
 # --- Publish ----------------------------------------------------------------
+# The release tag points at HEAD, so that commit must exist on the remote.
+if ! git branch -r --contains HEAD 2>/dev/null | grep -q .; then
+  BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+  if [ "$BRANCH" = "HEAD" ]; then
+    echo "error: detached HEAD — check out a branch (and push it) before releasing" >&2
+    exit 1
+  fi
+  echo "==> HEAD ($COMMIT) is not on origin yet; pushing '$BRANCH'..."
+  git push origin "$BRANCH"
+fi
+
 echo "==> Creating GitHub release '$RELEASE_NAME' (tagging $COMMIT)..."
 gh release create "$RELEASE_NAME" "${ASSETS[@]}" \
   --title "$RELEASE_NAME" \
