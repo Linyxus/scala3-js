@@ -5,7 +5,6 @@ package config
 
 import scala.annotation.internal.sharable
 
-import java.io.IOException
 import java.util.jar.Attributes.{ Name => AttributeName }
 import java.nio.charset.StandardCharsets
 
@@ -26,21 +25,19 @@ trait PropertiesTrait {
   /** The name of the properties file */
   protected val propFilename: String = "/" + propCategory + ".properties"
 
-  /** The loaded properties */
+  /** The loaded properties.
+   *
+   *  Scala.js cannot read `compiler.properties` from the classpath
+   *  (`getResourceAsStream` is unavailable), so the values are embedded at build
+   *  time into `CompilerPropertiesData` (see `project/Build.scala`,
+   *  `generateCompilerPropertiesSource`) and copied in here.
+   */
   @sharable protected lazy val scalaProps: java.util.Properties = {
     val props = new java.util.Properties
-    val stream: java.io.InputStream | Null = null /* getResourceAsStream not available on Scala.js */
-    if (stream ne null)
-      quietlyDispose(props.load(stream), stream.close)
-
+    for ((k, v) <- CompilerPropertiesData.entries)
+      props.setProperty(k, v)
     props
   }
-
-  private def quietlyDispose(action: => Unit, disposal: => Unit) =
-    try     { action }
-    finally
-        try     { disposal }
-        catch   { case _: IOException => }
 
   def propIsSet(name: String): Boolean                  = System.getProperty(name) != null
   def propIsSetTo(name: String, value: String): Boolean = propOrNull(name) == value
