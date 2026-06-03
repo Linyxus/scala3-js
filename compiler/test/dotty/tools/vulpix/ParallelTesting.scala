@@ -764,12 +764,14 @@ trait ParallelTesting extends RunnerOrchestration with CoverageSupport:
       // Neg checkfile diffs compare against the compiler's own rendered output.
       // The JS compiler already emits diagnostics in the canonical format (the
       // same MessageRendering the checkfiles were produced with), so use its
-      // stderr verbatim for the diff — minus ANSI and the trailing `N errors
-      // found` summary that the in-process TestReporter also suppresses.
+      // stderr verbatim for the diff. We must NOT strip ANSI: some messages embed
+      // colors (e.g. highlighted types) that survive `-color:never` and are part
+      // of the checkfile. We only drop the trailing `N errors found` summary that
+      // the in-process TestReporter also suppresses (via its no-op printSummary).
       def stripAnsi(s: String): String = s.replaceAll("\\u001b\\[[0-9;]*m", "")
       val summaryLine = raw"""\d+ (?:warning|error)s? found""".r
-      val cleaned = stripAnsi(lastErrors).linesIterator
-        .filterNot(l => summaryLine.matches(l.trim))
+      val cleaned = lastErrors.linesIterator
+        .filterNot(l => summaryLine.matches(stripAnsi(l).trim))
         .mkString("\n")
       reporter.overrideConsoleOutput(cleaned)
 
