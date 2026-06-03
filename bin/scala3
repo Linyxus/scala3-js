@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+
+# Launch the standalone `scala3` executable (Scala 3 compiler compiled to a
+# self-contained bun binary). Builds it via `sbt scala3-compiler-sjs/buildBinary`
+# if not present.
+#
+# Usage:
+#   scala3 compile [opts] File.scala …   # run the compiler (frontend; -scalajs emits .sjsir)
+#   scala3 run [--main Name] File.scala  # compile with -scalajs, link to JS, and run it
+#   scala3 -version                      # any other args pass through to the compiler
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" >& /dev/null && pwd)/.."
+BINARY="$ROOT/dist/scala3"
+
+if [ ! -x "$BINARY" ]; then
+  echo "Building standalone scala3 binary (sbt scala3-compiler-sjs/buildBinary)..." >&2
+  (cd "$ROOT" && sbt 'project scala3-compiler-sjs' buildBinary)
+  if [ ! -x "$BINARY" ]; then
+    echo "Error: failed to build $BINARY" >&2
+    exit 1
+  fi
+fi
+
+exec "$BINARY" "$@"
