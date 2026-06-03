@@ -589,7 +589,12 @@ trait ParallelTesting extends RunnerOrchestration with CoverageSupport:
               .toSet
             dottyFiles.filterNot(excludedFiles)
 
-        driver.process(allArgs ++ dottyFiles0, reporter = reporter)
+        sys.props.get("dotty.tests.jsCompiler") match
+          case Some(mainJs) =>
+            val runtime = sys.props.getOrElse("dotty.tests.jsRuntime", "bun")
+            compileWithJsCompiler(mainJs, runtime, flags, dottyFiles0, targetDir, reporter)
+          case None =>
+            driver.process(allArgs ++ dottyFiles0, reporter = reporter)
 
         // todo a better mechanism than ONLY. test: -scala-only?
         val javaFiles = files.filter(_.getName.endsWith(".java")).filterNot(_.getName.contains("SCALA_ONLY")).map(_.getPath)
@@ -718,6 +723,55 @@ trait ParallelTesting extends RunnerOrchestration with CoverageSupport:
       reporter
     }
     end compileWithOtherCompiler
+
+    /** Compile by invoking the JavaScript (Scala.js) build of the compiler as a
+     *  subprocess (`<runtime> main.js <args>`), parsing its textual stderr back
+     *  into the in-process `reporter`. Enabled by `-Ddotty.tests.jsCompiler=<main.js>`
+     *  and used by the `scala3-compiler-sjs/testCompilation` task. Mirrors the tail
+     *  of `compileWithOtherCompiler`.
+     */
+    protected def compileWithJsCompiler(mainJs: String, runtime: String, flags: TestFlags, dottyFiles: Array[String], targetDir: JFile, reporter: TestReporter): Unit =
+      // The JS compiler can't read jars, so we drop the JVM default classpath and
+      // let its `Main` inject the bundled lib/{jdk,scala-lib,scalajs-lib} dirs.
+      // `flags.options` already carries `-d <targetDir>`; `-classpath <targetDir>`
+      // exposes any .tasty produced by earlier separate-compilation groups.
+      val jsArgs = flags.options ++ Array("-classpath", targetDir.getPath) ++ dottyFiles
+      val command = Array(runtime, mainJs) ++ jsArgs
+      val pageWidth = TestConfiguration.pageWidth - 20
+
+      // posTwice compiles `times` times; each JS run is a fresh process, so we
+      // simply re-run and report diagnostics from the final invocation.
+      var lastExit = 0
+      var lastErrors = ""
+      for _ <- 1 to times do
+        val process = Runtime.getRuntime.exec(command)
+        lastErrors = Source.fromInputStream(process.getErrorStream).mkString
+        lastExit = process.waitFor()
+
+      // Report positioned errors so neg `// error` counting/line-matching works.
+      val diagnostics = parseErrors(lastErrors, "js", pageWidth)
+      if diagnostics.nonEmpty then
+        diagnostics.foreach { diag =>
+          val context = (new ContextBase).initialCtx
+          reporter.report(diag)(using context)
+        }
+      else if lastExit != 0 then
+        // Compilation failed but no positioned error was parsed (crash / usage
+        // error): surface the raw output so the failure is visible.
+        val context = (new ContextBase).initialCtx
+        reporter.report(Diagnostic.Error(s"JS compiler exited with code $lastExit:\n$lastErrors", NoSourcePosition))(using context)
+
+      // Neg checkfile diffs compare against the compiler's own rendered output.
+      // The JS compiler already emits diagnostics in the canonical format (the
+      // same MessageRendering the checkfiles were produced with), so use its
+      // stderr verbatim for the diff — minus ANSI and the trailing `N errors
+      // found` summary that the in-process TestReporter also suppresses.
+      def stripAnsi(s: String): String = s.replaceAll("\\u001b\\[[0-9;]*m", "")
+      val summaryLine = raw"""\d+ (?:warning|error)s? found""".r
+      val cleaned = stripAnsi(lastErrors).linesIterator
+        .filterNot(l => summaryLine.matches(l.trim))
+        .mkString("\n")
+      reporter.overrideConsoleOutput(cleaned)
 
     protected def compileFromBestEffortTasty(flags0: TestFlags, targetDir: JFile): TestReporter = {
       val classes = flattenFiles(targetDir).filter(isBestEffortTastyFile).map(_.toString)
