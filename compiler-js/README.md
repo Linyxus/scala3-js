@@ -175,6 +175,66 @@ When adding new overrides:
   actually breaks. The MegaPhase incident (rewriting logic instead of fixing the
   one incompatible method) is the cautionary tale.
 
+## Standalone executable (`scala3` binary)
+
+The compiler can be packaged into a single self-contained native executable with
+[bun](https://bun.sh)'s `bun build --compile`. The binary bundles the bun
+runtime, the fully-optimized `main.js`, and the packed `classpath.bin` /
+`linker-libs.bin` archives — no JVM, Node, or bun installation required to run
+it.
+
+```bash
+# Build a binary for the host platform → dist/scala3
+sbt --client scala3-compiler-sjs/buildBinary
+
+# Build the full release matrix → dist/scala3-{darwin,linux}-{arm64,x64}[, .exe]
+sbt --client scala3-compiler-sjs/buildBinaryAll
+```
+
+`bin/scala3` execs `dist/scala3`, building it on demand if missing.
+
+### CLI surface
+
+```bash
+scala3 compile [opts] File.scala …   # run the compiler (frontend; -scalajs emits .sjsir)
+scala3 run [--main Name] File.scala  # compile with -scalajs, link to JS, and run it
+scala3 -version                      # any other args pass straight to the compiler
+```
+
+`run` auto-detects the entry point from `@main def <name>` (falling back to
+`main`); pass `--main <Name>` to override.
+
+### How it works
+
+- **`buildBinary`** (host) and **`buildBinaryAll`** (cross-compiled matrix) live
+  in `project/Build.scala`. Both depend on `fullLinkJS` + `packClasspath` +
+  `packLinkerLibs` via the shared `prepareBinaryAssets` task, which also
+  generates the bun entrypoint `cli.ts`.
+- The classpath cannot be embedded as a loose class-file tree: bun stores
+  embedded files under flat, content-hashed `$bunfs` names with no directory
+  enumeration, but the compiler's `DirectoryClassPath` needs to list packages.
+  So the binary reuses the **browser** machinery — the single `classpath.bin`
+  archive is loaded by `ClasspathBlob.load` into an in-memory `VirtualDirectory`
+  served as a `VirtualDirectoryClassPath` (see `EmbeddedDriver` in `Main.scala`).
+- `cli.ts` embeds `main.js` / `classpath.bin` / `linker-libs.bin` with
+  `import … with { type: "file" }`, stashes the classpath/linker `$bunfs` paths
+  on `globalThis`, provides a `createRequire`-based `require` (the IO shims call
+  `require("fs")`/`require("path")`), and runs `main.js` as a **classic script**
+  via indirect `eval` — Scala.js NoModule output expects `this === globalThis`,
+  so it must not be imported as a module.
+- `Main.scala` resolves the archives from those globals when embedded, falling
+  back to disk (next to `main.js`) for `bun main.js …` dev runs, with a final
+  fallback to the unpacked `lib/` class directories for plain `compile`.
+
+### Cross-compilation
+
+`buildBinaryAll` targets darwin arm64/x64, linux x64/arm64, and windows x64. The
+same `main.js` and archives are platform-independent; only the embedded bun
+runtime differs per `--target`. Edit `binaryTargets` in `project/Build.scala` to
+change the matrix. Notes: x64 may need a `-baseline` target for pre-2013 CPUs,
+and macOS distribution requires `codesign` (with JIT entitlements, since `run`
+uses `eval`).
+
 ## JavaScript API
 
 The generated `main.js` exposes two usage modes: a Node.js CLI entry point and a
