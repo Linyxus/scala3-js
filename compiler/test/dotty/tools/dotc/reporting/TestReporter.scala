@@ -34,7 +34,12 @@ extends Reporter with UniqueMessagePositions with HideNonSensicalMessages with M
   protected final val _consoleReporter = new TestConsoleReporter(new PrintWriter(_consoleBuf)):
     override protected def renderPath(file: AbstractFile): String = TestReporter.renderPath(file)
 
-  final def consoleOutput: String = _consoleBuf.toString
+  /** When set, overrides `consoleOutput` for check-file diffing. Used by the
+   *  JS-compiler test path, whose "actual" output is the compiler subprocess's
+   *  own stderr rather than diagnostics rendered in-process by this reporter. */
+  private var _consoleOutputOverride: Option[String] = None
+  def overrideConsoleOutput(text: String): Unit = _consoleOutputOverride = Some(text)
+  final def consoleOutput: String = _consoleOutputOverride.getOrElse(_consoleBuf.toString)
 
   private var _skip: Boolean = false
   final def setSkip(): Unit = _skip = true

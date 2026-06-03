@@ -2004,6 +2004,26 @@ object Build {
       scalaJSUseMainModuleInitializer := true,
       Compile / mainClass := Some("dotty.tools.dotc.Main"),
       scalaJSLinkerConfig ~= { _.withESFeatures(_.withESVersion(ESVersion.ES2018)) },
+      // Run the compilation tests (pos, posTwice, neg) against the JS build of the
+      // compiler. The Vulpix tests still run on the JVM (reusing the bootstrapped
+      // compiler's Test classes), but each compilation is delegated to the JS
+      // compiler as a subprocess via `-Ddotty.tests.jsCompiler=<main.js>` (see
+      // ParallelTesting.compileWithJsCompiler). Minimal by design: no advanced flags.
+      testCompilation := Def.inputTaskDyn {
+        val args   = spaceDelimited("<arg>").parsed
+        val filter = args.filterNot(_.startsWith("--"))
+        // main.js is produced by fastLinkJS; bundleLibs (a dependency below) places
+        // the lib/ dirs next to it so the JS compiler can find its classpath.
+        val mainJs = ((Compile / fastLinkJS / scalaJSLinkerOutputDirectory).value / "main.js").getAbsolutePath
+        val cmd =
+          // junit-interface `--tests` matches the bare method name (anchored), so
+          // select exactly pos/posTwice/negAll with a single regex.
+          " dotty.tools.dotc.CompilationTests -- --exclude-categories=dotty.SlowTests" +
+          " --tests=(pos|posTwice|negAll)" +
+          s" -Ddotty.tests.jsCompiler=$mainJs" +
+          (if (filter.nonEmpty) " -Ddotty.tests.filter=" + filter.mkString(" ") else "")
+        (`scala3-compiler-bootstrapped` / Test / testOnly).toTask(cmd)
+      }.dependsOn(bundleLibs).evaluated,
       // Task to bundle JDK + scala library + scalajs-library class files next to main.js
       bundleLibs := {
         val s = streams.value
