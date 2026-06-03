@@ -36,8 +36,47 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$ROOT/dist"
+ENTITLEMENTS="$ROOT/scripts/macos-entitlements.plist"
 
 cd "$ROOT"
+
+# Notarize a signed macOS binary (online ticket — a bare executable can't be
+# stapled, so Gatekeeper verifies against Apple's servers).
+notarize_macos_binary() {
+  local bin="$1"
+  local zip="${bin}.notarize.zip"
+  local auth=()
+  if [ -n "${MACOS_NOTARY_PROFILE:-}" ]; then
+    auth=(--keychain-profile "$MACOS_NOTARY_PROFILE")
+  elif [ -n "${MACOS_NOTARY_APPLE_ID:-}" ] && [ -n "${MACOS_NOTARY_PASSWORD:-}" ] && [ -n "${MACOS_NOTARY_TEAM_ID:-}" ]; then
+    auth=(--apple-id "$MACOS_NOTARY_APPLE_ID" --password "$MACOS_NOTARY_PASSWORD" --team-id "$MACOS_NOTARY_TEAM_ID")
+  else
+    echo "error: MACOS_SIGN_IDENTITY is set but no notary credentials found." >&2
+    echo "       Set MACOS_NOTARY_PROFILE, or MACOS_NOTARY_APPLE_ID + MACOS_NOTARY_PASSWORD + MACOS_NOTARY_TEAM_ID." >&2
+    exit 1
+  fi
+  echo "    notarizing $(basename "$bin")..."
+  /usr/bin/ditto -c -k --keepParent "$bin" "$zip"
+  xcrun notarytool submit "$zip" "${auth[@]}" --wait
+  rm -f "$zip"
+}
+
+# Code-sign one macOS binary: Developer ID + notarization when an identity is
+# configured, otherwise a valid ad-hoc signature (runnable from the terminal,
+# but Finder/Gatekeeper will still warn on download).
+sign_macos_binary() {
+  local bin="$1"
+  if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
+    echo "    Developer ID signing $(basename "$bin") ($MACOS_SIGN_IDENTITY)"
+    codesign --force --timestamp --options runtime \
+      --entitlements "$ENTITLEMENTS" --sign "$MACOS_SIGN_IDENTITY" "$bin"
+    notarize_macos_binary "$bin"
+  else
+    echo "    ad-hoc signing $(basename "$bin")"
+    codesign --force --sign - "$bin"
+  fi
+  codesign --verify --verbose "$bin"
+}
 
 # --- Preflight -------------------------------------------------------------
 REQUIRED_TOOLS=(bun gh)
@@ -78,6 +117,25 @@ ASSETS=(
 for asset in "${ASSETS[@]}"; do
   [ -f "$asset" ] || { echo "error: expected binary not found: $asset" >&2; exit 1; }
 done
+
+# --- Sign macOS binaries ----------------------------------------------------
+MACOS_BINARIES=(
+  "$DIST/scala3-darwin-arm64"
+  "$DIST/scala3-darwin-x64"
+)
+if [ "$(uname -s)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
+  echo "==> Code-signing macOS binaries..."
+  for bin in "${MACOS_BINARIES[@]}"; do
+    sign_macos_binary "$bin"
+  done
+  if [ -z "${MACOS_SIGN_IDENTITY:-}" ]; then
+    echo "    note: ad-hoc signed (no MACOS_SIGN_IDENTITY). Binaries run from the"
+    echo "          terminal; users who hit a Finder/Gatekeeper prompt can run:"
+    echo "            xattr -d com.apple.quarantine ./scala3-darwin-*"
+  fi
+else
+  echo "warning: not on macOS (or codesign missing) — macOS binaries will be UNSIGNED" >&2
+fi
 
 # --- Publish ----------------------------------------------------------------
 # The release tag points at HEAD, so that commit must exist on the remote.
