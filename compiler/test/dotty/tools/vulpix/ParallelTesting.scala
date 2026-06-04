@@ -722,14 +722,24 @@ trait ParallelTesting extends RunnerOrchestration with CoverageSupport:
 
       // Report positioned errors so neg `// error` counting/line-matching works.
       val diagnostics = parseErrors(lastErrors, "js", pageWidth)
-      if diagnostics.nonEmpty then
-        diagnostics.foreach { diag =>
-          val context = (new ContextBase).initialCtx
-          reporter.report(diag)(using context)
-        }
-      else if lastExit != 0 then
-        // Compilation failed but no positioned error was parsed (crash / usage
-        // error): surface the raw output so the failure is visible.
+      diagnostics.foreach { diag =>
+        val context = (new ContextBase).initialCtx
+        reporter.report(diag)(using context)
+      }
+
+      // `parseErrors` only recovers *positioned* errors. The compiler's own
+      // "N errors found" summary is the authoritative total, so any shortfall is
+      // no-position errors (e.g. -Werror's "No warnings can be incurred under
+      // -Werror", which has no source position). Report those as NoSourcePosition
+      // errors so neg `// nopos-error` markers and error counts match the JVM path.
+      val errorsFound = raw"""(\d+) errors? found""".r.findAllMatchIn(lastErrors).toList.lastOption.map(_.group(1).toInt)
+      val total = errorsFound.getOrElse(if lastExit != 0 then math.max(diagnostics.length, 1) else diagnostics.length)
+      for _ <- diagnostics.length until total do
+        val context = (new ContextBase).initialCtx
+        reporter.report(Diagnostic.Error("error reported by the JS compiler without a source position", NoSourcePosition))(using context)
+
+      // Crash / usage error with no parseable output at all: surface raw stderr.
+      if total == 0 && lastExit != 0 then
         val context = (new ContextBase).initialCtx
         reporter.report(Diagnostic.Error(s"JS compiler exited with code $lastExit:\n$lastErrors", NoSourcePosition))(using context)
 

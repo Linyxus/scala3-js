@@ -5,6 +5,8 @@ import scala.scalajs.js
 import scala.scalajs.js.typedarray._
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 
+import java.io.{OutputStream, PrintStream}
+
 import dotty.tools.io.{VirtualDirectory, AbstractFile}
 import dotty.tools.dotc.classpath.VirtualDirectoryClassPath
 import dotty.tools.dotc.config.{JavaPlatform, SJSPlatform, Platform}
@@ -37,11 +39,35 @@ object Main extends Driver {
     val cliArgs = readCliArgs(args)
     val cpDir = loadEmbeddedClasspath()
 
-    cliArgs.toList match
-      case "run" :: rest      => runMode(rest.toArray, cpDir)
-      case "compile" :: rest  => compileMode(rest.toArray, cpDir)
-      case other              => compileMode(other.toArray, cpDir)
+    withUtf8Stdio {
+      cliArgs.toList match
+        case "run" :: rest      => runMode(rest.toArray, cpDir)
+        case "compile" :: rest  => compileMode(rest.toArray, cpDir)
+        case other              => compileMode(other.toArray, cpDir)
+    }
   }
+
+  /** Route stdout/stderr through raw UTF-8 writes to the Node file descriptors.
+   *
+   *  Scala.js's default `System.out`/`System.err` go through a console-based
+   *  stream that round-trips the text through ISO-8859-1, double-encoding any
+   *  non-ASCII output (e.g. the `Byte²` disambiguation superscripts in compiler
+   *  diagnostics would come out as `ByteÂ²`). Writing the string's UTF-8 bytes
+   *  straight to fd 1/2 avoids that. Best-effort: if setup fails (e.g. no `fs`),
+   *  run unredirected.
+   */
+  private def withUtf8Stdio[T](body: => T): T =
+    val streams =
+      try
+        val out = new PrintStream(new NodeFdOutputStream(1), true, "UTF-8")
+        val err = new PrintStream(new NodeFdOutputStream(2), true, "UTF-8")
+        System.setOut(out)
+        System.setErr(err)
+        Some((out, err))
+      catch case _: Throwable => None
+    streams match
+      case Some((out, err)) => scala.Console.withOut(out)(scala.Console.withErr(err)(body))
+      case None             => body
 
   // --- CLI argument handling ------------------------------------------------
 
@@ -215,6 +241,26 @@ object Main extends Driver {
     }
   }
 }
+
+/** An OutputStream that writes raw bytes straight to a Node file descriptor
+ *  (1 = stdout, 2 = stderr) via `fs.writeSync`, with no charset round-trip.
+ *  Wrapped in a UTF-8 `PrintStream`, this gives correct non-ASCII output.
+ */
+private final class NodeFdOutputStream(fd: Int) extends OutputStream:
+  private val fs = js.Dynamic.global.require("fs")
+
+  override def write(b: Int): Unit =
+    val buf = new Int8Array(1)
+    buf(0) = b.toByte
+    fs.writeSync(fd, buf.asInstanceOf[js.Any])
+
+  override def write(b: Array[Byte], off: Int, len: Int): Unit =
+    val buf = new Int8Array(len)
+    var i = 0
+    while i < len do
+      buf(i) = b(off + i)
+      i += 1
+    fs.writeSync(fd, buf.asInstanceOf[js.Any])
 
 /** A Driver whose classpath is served from an in-memory VirtualDirectory
  *  (loaded from `classpath.bin`), while source input and `-d` output stay on
