@@ -10,7 +10,7 @@ abstract class FileChannel extends Channel {
 }
 
 object FileChannel {
-  def open(path: Path, options: java.util.Set[_ <: OpenOption]): FileChannel =
+  def open(path: Path, options: java.util.Set[? <: OpenOption]): FileChannel =
     throw new IOException("FileChannel.open not supported on Scala.js")
 }
 

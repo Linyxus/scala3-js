@@ -85,7 +85,7 @@ abstract class ZipArchive(override val jpath: JPath, release: Option[String]) ex
 }
 
 final class FileZipArchive(jpath: JPath, release: Option[String]) extends ZipArchive(jpath, release) {
-  lazy val (root, allDirs): (DirEntry, collection.Map[String, DirEntry]) = {
+  lazy val (root: DirEntry, allDirs: collection.Map[String, DirEntry]) = {
     val root = new DirEntry("/", null)
     val dirs = mutable.HashMap[String, DirEntry]("/" -> root)
     (root, dirs)

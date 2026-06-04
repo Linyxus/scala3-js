@@ -98,13 +98,14 @@ abstract class CyclicMsg(errorId: ErrorMessageID)(using Context) extends Message
       "\n\nStacktrace:" ++ ex.getStackTrace().mkString("\n    ", "\n    ", "")
     else "\n\n Run with both -explain-cyclic and -Ydebug-cyclic to see full stack trace."
 
-  protected def context: String = ex.optTrace match
-    case Some(trace) =>
+  protected def context: String =
+    val trace = ex.optTrace
+    if trace != null then
       s"\n\nThe error occurred while trying to ${
         trace.map(identity) // map with identity will turn Context ?=> String elements to String elements
           .mkString("\n  which required to ")
       }$debugInfo"
-    case None =>
+    else
       "\n\n Run with -explain-cyclic for more details."
 end CyclicMsg
 
@@ -3868,3 +3869,72 @@ final class PrivateShadowsType(shadow: Symbol, shadowed: Symbol)(using Context)
     i"""A private field shadows an inherited field with the same name.
        |This can lead to confusion as the inherited field becomes inaccessible.
        |Consider renaming the private field to avoid the shadowing."""
+
+class AmbiguousTemplateName(tree: NamedDefTree[?])(using Context) extends SyntaxMsg(AmbiguousTemplateNameID):
+  override protected def msg(using Context) = i"name `${tree.name}` should be enclosed in backticks"
+  override protected def explain(using Context): String =
+    "Names with trailing operator characters may fuse with a subsequent colon if not set off by backquotes or spaces."
+
+class IndentationWarning(isLeft: Boolean = false, before: String = "", missing: Token*)(using Context)
+extends SyntaxMsg(IndentationWarningID):
+  override protected def msg(using Context) =
+    s"Line is indented too far to the ${if isLeft then "left" else "right"}, or a ${
+      missing.map(Tokens.showToken).mkString(" or ")
+    } is missing${
+      if !before.isEmpty then i" before:\n\n$before" else ""
+    }"
+  override protected def explain(using Context): String =
+    "Indentation that does not reflect syntactic nesting may be due to a typo such as missing punctuation."
+
+final class IllegalIdentifier(name: Name)(using Context) extends SyntaxMsg(IllegalIdentifierID):
+  override protected def msg(using Context): String = name match
+    case nme.CONSTRUCTOR | nme.STATIC_CONSTRUCTOR =>
+      "Illegal backquoted identifier: `<init>` and `<clinit>` are forbidden"
+    case _ =>
+      i"The identifier `$name` should not contain `$$`, which is reserved for internal compiler use."
+  override protected def explain(using Context): String = name match
+    case nme.CONSTRUCTOR | nme.STATIC_CONSTRUCTOR =>
+      "Names can include unusual characters when enclosed in backquotes, but `<init>` and `<clinit>` are reserved."
+    case _ =>
+      i"""User identifiers may be encoded with embedded `$$`, and other compiler artifacts
+         |may rely on using `$$` with specific meanings.
+         |
+         |The prohibition against explicit `$$` may be ignored by enclosing the identifier in backquotes
+         |at the definition site."""
+
+class ConcreteClassHasUnimplementedMethods(
+    clazz: ClassSymbol,
+    missingMethods: List[Symbol],
+    addendum: String,
+    methodActions: List[CodeAction])(using Context)
+extends Message(ConcreteClassHasUnimplementedMethodsID), NoDisambiguation:
+
+  def kind = MessageKind.Declaration
+
+  private def showDecl(sym: Symbol)(using Context): String =
+    sym.asSeenFrom(clazz.thisType).mapInfo(_.withCleanParamNames).showDcl
+
+  private def prelude(using Context): String =
+    if clazz.isAnonymousClass || clazz.is(Module) then "object creation impossible"
+    else if clazz.is(Synthetic) then "instance cannot be created"
+    else s"$clazz needs to be abstract"
+
+  private def renderMissingMethods(using Context): List[String] =
+    val grouped = missingMethods.groupBy(_.owner).toList
+    grouped.sortBy(_._1.name).map { case (owner, members) =>
+      val sigs = members.sortBy(_.name).map(s => s"- ${showDecl(s)}")
+      s"""Members declared in ${owner.fullName}:
+         |${sigs.mkString("\n")}""".stripMargin
+    }
+
+  def msg(using Context) = missingMethods match
+    case single :: Nil =>
+      val notDefined = s"${showDecl(single)} in ${single.owner.showLocated} is not defined"
+      s"$prelude, since $notDefined$addendum"
+    case _ =>
+      s"""$prelude, since it has ${missingMethods.size} unimplemented members.
+         |
+         |${renderMissingMethods.mkString("\n\n")}""".stripMargin
+
+  def explain(using Context) = ""
+  override def actions(using Context) = methodActions

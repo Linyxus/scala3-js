@@ -7,16 +7,24 @@ import dotty.tools.io.{AbstractFile, VirtualDirectory}
 import FileUtils.*
 import dotty.tools.io.ClassPath
 import dotty.tools.dotc.core.Contexts.*
+import dotty.tools.dotc.interactive.LogicalSourcePath
+import dotty.tools.dotc.interactive.LogicalPackage
 import java.nio.file.Files
 
-class ClassPathFactory {
+class ClassPathFactory(precomputedSourcePackages: Option[LogicalPackage] = None) {
   def newClassPath(file: AbstractFile)(using Context): ClassPath = ClassPathFactory.newClassPath(file)
 
   def sourcesInPath(path: String)(using Context): List[ClassPath] =
-    for
-      file <- expandPath(path, expandStar = false)
-      dir <- Option(AbstractFile.getDirectory(file))
-    yield createSourcePath(dir)
+    precomputedSourcePackages match {
+      // We also accept files in case of YlogicalPackageLoading
+      case Some(rootPackage) if ctx.settings.YlogicalPackageLoading.value  =>
+        List(new LogicalSourcePath(path, rootPackage))
+      case _ =>
+        for
+          file <- expandPath(path, expandStar = false)
+          dir <- Option(AbstractFile.getDirectory(file))
+        yield createSourcePath(dir)
+    }
 
   def expandPath(path: String, expandStar: Boolean = true): List[String] = dotty.tools.io.ClassPath.expandPath(path, expandStar)
 
@@ -48,7 +56,7 @@ class ClassPathFactory {
         Option(AbstractFile.getDirectory(file)).orElse(asImage)
       }
     }
-    yield dir.nn
+    yield dir
 
     val expanded =
       if false then /* scala.util.Properties not available on Scala.js */

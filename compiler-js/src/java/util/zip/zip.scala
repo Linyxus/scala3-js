@@ -25,7 +25,7 @@ class ZipFile(file: java.io.File, mode: Int) {
   def this(file: java.io.File) = this(file, ZipFile.OPEN_READ)
   def this(name: String) = this(new java.io.File(name))
 
-  def entries(): java.util.Enumeration[_ <: ZipEntry] =
+  def entries(): java.util.Enumeration[? <: ZipEntry] =
     java.util.Collections.emptyEnumeration()
 
   def getEntry(name: String): ZipEntry | Null = null

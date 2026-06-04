@@ -103,7 +103,12 @@ class SourceFile(val file: AbstractFile, computeContent: => Array[Char]) extends
   private var myContent: Array[Char] | Null = null
 
   /** The contents of the original source file. Note that this can be empty, for example when
-   * the source is read from Tasty. */
+   * the source is read from Tasty.
+   *
+   * NB: declared without `()` to match the `interfaces.SourceFile` Scala override
+   * (see the note there). The JVM build's `interfaces.SourceFile` is a Java
+   * interface, so its `content()` enjoys Java-style auto-application and callers
+   * may use either `.content` or `.content()`; here only `.content` is valid. */
   def content: Array[Char] = {
     if (myContent == null) myContent = computeContent
     myContent.nn

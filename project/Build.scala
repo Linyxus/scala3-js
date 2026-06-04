@@ -236,7 +236,7 @@ object Build {
     val bunArgs = Seq("bun", "build", "--compile", "--minify") ++ targetArgs ++
       Seq(cliTs.getAbsolutePath, "--outfile", outFile.getAbsolutePath)
     log.info(s"Building ${outFile.getName} [${target.getOrElse("host")}]: ${bunArgs.mkString(" ")}")
-    val exit = scala.sys.process.Process(bunArgs, cliTs.getParentFile).!
+    val exit = _root_.scala.sys.process.Process(bunArgs, cliTs.getParentFile).!
     if (exit != 0) sys.error(s"bun build --compile failed for ${target.getOrElse("host")} (exit code $exit)")
     log.info(s"Built $outFile (${outFile.length() / (1024 * 1024)} MB)")
   }
@@ -1821,10 +1821,10 @@ object Build {
           val sjsSources = (trgDir ** "*.scala").get.toSet
           sjsSources.foreach(f => {
             val lines = IO.readLines(f)
-            val linesWithPackage = replacePackage(lines) {
+            val linesWithPackage = Shading.replacePackage(lines) {
               case "org.scalajs.ir" => "dotty.tools.sjs.ir"
             }
-            IO.writeLines(f, insertUnsafeNullsImport(linesWithPackage))
+            IO.writeLines(f, Shading.insertUnsafeNullsImport(linesWithPackage))
           })
           sjsSources
         } (Set(scalaJSIRSourcesJar)).toSeq
@@ -1837,6 +1837,17 @@ object Build {
       Compile / resourceDirectories += (LocalProject("scala3-compiler-bootstrapped") / baseDirectory).value / "resources",
       // Project specific target folder
       target := target.value / "scala3-compiler-sjs",
+      // Demote the "alphanumeric method is not declared infix" lint to a warning.
+      // It fires on shared upstream compiler sources (e.g. PathResolver's debug
+      // `Calculated` object) only under `-scalajs`; the bootstrapped JVM build
+      // compiles the same code cleanly, so this is purely a lint-level mismatch.
+      Compile / scalacOptions += "-Wconf:msg=is not declared infix:s",
+      // Silence warnings in the generated scalajs-ir sources (same as the
+      // bootstrapped compiler project, which also includes these sources).
+      Compile / scalacOptions +=
+        "-Wconf:src=scalajs-ir-src/.*&msg=Implicit parameters should be provided with a `using` clause:s",
+      Compile / scalacOptions +=
+        "-Wconf:src=scalajs-ir-src/.*&msg=object AnyRefMap in package scala\\.collection\\.mutable is deprecated:s",
       publish / skip := true,
       bspEnabled := false,
       scalaJSUseMainModuleInitializer := true,
@@ -1889,7 +1900,7 @@ object Build {
           val tmpDir = libDir / "jmod-tmp"
           IO.createDirectory(tmpDir)
           val jmodTool = new File(javaHome) / "bin" / "jmod"
-          val exitCode = scala.sys.process.Process(
+          val exitCode = _root_.scala.sys.process.Process(
             Seq(jmodTool.getAbsolutePath, "extract", "--dir", tmpDir.getAbsolutePath, jmodFile.getAbsolutePath)
           ).!
           if (exitCode != 0) sys.error(s"jmod extract failed with exit code $exitCode")
@@ -1983,7 +1994,7 @@ object Build {
 
         // Build data buffer and index
         val dataStream = new java.io.ByteArrayOutputStream()
-        val index = new scala.collection.mutable.LinkedHashMap[String, (Int, Int)]()
+        val index = new _root_.scala.collection.mutable.LinkedHashMap[String, (Int, Int)]()
         var offset = 0
 
         for ((rel, file) <- entries) {
@@ -2031,7 +2042,7 @@ object Build {
         s.log.info(s"Packing ${entries.size} .sjsir files into ${outputFile.getName}...")
 
         val dataStream = new java.io.ByteArrayOutputStream()
-        val index = new scala.collection.mutable.LinkedHashMap[String, (Int, Int)]()
+        val index = new _root_.scala.collection.mutable.LinkedHashMap[String, (Int, Int)]()
         var offset = 0
 
         for ((rel, file) <- entries) {

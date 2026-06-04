@@ -98,10 +98,10 @@ object Files {
   def readAttributes[A <: BasicFileAttributes](path: Path, tpe: Class[A], options: LinkOption*): A =
     throw new IOException("Files.readAttributes not supported on Scala.js")
 
-  def walkFileTree(start: Path, visitor: FileVisitor[_ >: Path]): Path =
+  def walkFileTree(start: Path, visitor: FileVisitor[? >: Path]): Path =
     throw new UnsupportedOperationException("Files.walkFileTree not supported on Scala.js")
 
-  def walkFileTree(start: Path, options: java.util.Set[FileVisitOption], maxDepth: Int, visitor: FileVisitor[_ >: Path]): Path =
+  def walkFileTree(start: Path, options: java.util.Set[FileVisitOption], maxDepth: Int, visitor: FileVisitor[? >: Path]): Path =
     throw new UnsupportedOperationException("Files.walkFileTree not supported on Scala.js")
 
   def walk(start: Path, options: FileVisitOption*): stream.Stream[Path] =

@@ -283,7 +283,7 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
         (cdef.name.toString, cdef.constructor, cdef.parents, cdef.self, rhs.body)
 
       def module(module: Symbol, parents: List[Tree /* Term | TypeTree */], body: List[Statement]): (ValDef, ClassDef) = {
-        if xCheckMacro then TreeChecker.checkParents(module.moduleClass.asClass, parents)
+        if xCheckMacro then TreeChecker.checkParents(module.moduleClass.asClass, parents, xCheckMacroAssert)
         val cls = module.moduleClass
         val clsDef = ClassDef(cls, parents, body)
         val newCls = Apply(Select(New(TypeIdent(cls)), cls.primaryConstructor), Nil)
