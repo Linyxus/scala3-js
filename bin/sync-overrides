@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+#
+# sync-overrides — 3-way merge the compiler-js/src override files against
+# upstream evolution, turning silent compile-time drift into loud, localized
+# git conflicts that mostly auto-resolve.
+#
+# Each file under compiler-js/src/ is a whole-file replacement of an upstream
+# source under compiler/src, compiler/src-bootstrapped or tasty/src. Because it
+# lives at a different path, git never 3-way-merges it on rebase, so upstream's
+# changes are absorbed only by hand (discovered one compile error at a time).
+#
+# This tool restores the 3-way merge for each tracked override:
+#
+#     ours   = the current override            (compiler-js/src/X)
+#     base   = upstream X at the last sync     (sha in compiler-js/.upstream-base)
+#     theirs = upstream X at the target commit (--onto, default scala3/main)
+#
+#     result = git merge-file(ours, base, theirs)
+#
+# Upstream changes in regions the override did NOT touch merge cleanly (ours ==
+# base there → take theirs). Only where a JS tweak overlaps an upstream change do
+# you get a conflict — exactly where human judgment is actually needed.
+#
+# Typical workflow:
+#   1. ./bin/sync-overrides --report-only        # preview: clean vs conflict
+#   2. ./bin/sync-overrides                       # apply merges in place
+#   3. resolve any conflict markers, compile
+#   4. git rebase scala3/main                     # update pristine compiler/src
+#   5. echo <new-upstream-sha> > compiler-js/.upstream-base   # record new sync
+#
+# Flags:
+#   --onto <ref>       upstream target to merge toward      (default: scala3/main)
+#   --base <sha>       upstream commit the overrides match  (default: .upstream-base)
+#   --ours-ref <ref>   read override contents from a git ref instead of the
+#                      working tree (used for retro-validation)
+#   --report-only      classify + merge in memory, print a report, write nothing
+#
+# Exit non-zero if any conflicts or orphans are found (CI-friendly).
+
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+OVERRIDE_DIR="compiler-js/src"
+BASE_FILE="compiler-js/.upstream-base"
+UPSTREAM_ROOTS=("compiler/src" "compiler/src-bootstrapped" "tasty/src")
+
+ONTO="scala3/main"
+BASE_SHA=""
+OURS_REF=""
+REPORT_ONLY=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --onto)        ONTO="$2"; shift 2 ;;
+    --base)        BASE_SHA="$2"; shift 2 ;;
+    --ours-ref)    OURS_REF="$2"; shift 2 ;;
+    --report-only) REPORT_ONLY=1; shift ;;
+    -h|--help)     sed -n '2,40p' "$0"; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [ -z "$BASE_SHA" ]; then
+  if [ -f "$BASE_FILE" ]; then
+    BASE_SHA="$(tr -d '[:space:]' < "$BASE_FILE")"
+  else
+    echo "error: no --base given and $BASE_FILE is missing." >&2
+    echo "       seed it with the upstream sha the overrides currently match:" >&2
+    echo "       echo <sha> > $BASE_FILE" >&2
+    exit 2
+  fi
+fi
+
+base_short="$(git rev-parse --short "$BASE_SHA" 2>/dev/null || echo "$BASE_SHA")"
+onto_short="$(git rev-parse --short "$ONTO" 2>/dev/null || echo "$ONTO")"
+
+echo "sync-overrides: base=$base_short  onto=$onto_short  ours=${OURS_REF:-working-tree}  $([ $REPORT_ONLY = 1 ] && echo '(report-only)')"
+echo
+
+# Echo "root/rel" if rel exists under one of the upstream roots at the given ref.
+resolve_at() { # <ref> <rel>
+  local ref="$1" rel="$2" r
+  for r in "${UPSTREAM_ROOTS[@]}"; do
+    if git cat-file -e "$ref:$r/$rel" 2>/dev/null; then echo "$r/$rel"; return 0; fi
+  done
+  return 1
+}
+
+clean=0; conflicted=0; orphan=0; nobase=0; newstub=0
+conflict_list=(); orphan_list=(); nobase_list=()
+
+tmp_ours="$(mktemp)"; tmp_base="$(mktemp)"; tmp_theirs="$(mktemp)"; tmp_out="$(mktemp)"
+trap 'rm -f "$tmp_ours" "$tmp_base" "$tmp_theirs" "$tmp_out"' EXIT
+
+while IFS= read -r -d '' f; do
+  rel="${f#$OVERRIDE_DIR/}"
+
+  base_path="$(resolve_at "$BASE_SHA" "$rel" || true)"
+  onto_path="$(resolve_at "$ONTO" "$rel" || true)"
+
+  # Classify files with no upstream counterpart.
+  if [ -z "$base_path" ] && [ -z "$onto_path" ]; then
+    newstub=$((newstub+1)); continue          # JDK stub / fork-original — no dotty drift
+  fi
+  if [ -n "$base_path" ] && [ -z "$onto_path" ]; then
+    orphan=$((orphan+1)); orphan_list+=("$rel"); continue   # upstream deleted/renamed it
+  fi
+  if [ -z "$base_path" ] && [ -n "$onto_path" ]; then
+    nobase=$((nobase+1)); nobase_list+=("$rel"); continue    # upstream added since base — review
+  fi
+
+  # ours
+  if [ -n "$OURS_REF" ]; then
+    git show "$OURS_REF:$OVERRIDE_DIR/$rel" > "$tmp_ours" 2>/dev/null || { newstub=$((newstub+1)); continue; }
+  else
+    cat "$f" > "$tmp_ours"
+  fi
+  git show "$BASE_SHA:$base_path" > "$tmp_base"
+  git show "$ONTO:$onto_path"     > "$tmp_theirs"
+
+  rc=0
+  git merge-file -p --diff3 \
+      -L "override (ours)" -L "upstream@$base_short" -L "upstream@$onto_short" \
+      "$tmp_ours" "$tmp_base" "$tmp_theirs" > "$tmp_out" || rc=$?
+
+  if [ "$rc" -eq 0 ]; then
+    clean=$((clean+1))
+    if [ $REPORT_ONLY -eq 0 ] && [ -z "$OURS_REF" ]; then cp "$tmp_out" "$f"; fi
+  elif [ "$rc" -gt 0 ] && [ "$rc" -lt 255 ]; then
+    conflicted=$((conflicted+1)); conflict_list+=("$rel ($rc)")
+    if [ $REPORT_ONLY -eq 0 ] && [ -z "$OURS_REF" ]; then cp "$tmp_out" "$f"; fi
+  else
+    echo "  ! merge error on $rel" >&2
+    conflicted=$((conflicted+1)); conflict_list+=("$rel (error)")
+  fi
+done < <(find "$OVERRIDE_DIR" -name '*.scala' -print0 | sort -z)
+
+echo "── result ───────────────────────────────────────────"
+printf "  clean (auto-merged) : %d\n" "$clean"
+printf "  conflicts           : %d\n" "$conflicted"
+printf "  orphaned upstream   : %d\n" "$orphan"
+printf "  new-upstream/no-base : %d\n" "$nobase"
+printf "  stubs (skipped)     : %d\n" "$newstub"
+
+if [ "${#conflict_list[@]}" -gt 0 ]; then
+  echo; echo "  conflicts (resolve markers):"
+  printf '    - %s\n' "${conflict_list[@]}"
+fi
+if [ "${#orphan_list[@]}" -gt 0 ]; then
+  echo; echo "  orphaned (upstream deleted/renamed — override may be dead):"
+  printf '    - %s\n' "${orphan_list[@]}"
+fi
+if [ "${#nobase_list[@]}" -gt 0 ]; then
+  echo; echo "  no base (upstream added since base — review manually):"
+  printf '    - %s\n' "${nobase_list[@]}"
+fi
+
+[ "$conflicted" -eq 0 ] && [ "$orphan" -eq 0 ] && exit 0 || exit 1
