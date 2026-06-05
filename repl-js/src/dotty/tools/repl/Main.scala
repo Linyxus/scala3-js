@@ -26,7 +26,7 @@ object Main:
     if !hasProcess then return
 
     // With `scalaJSUseMainModuleInitializer`, `main` is invoked with no args, so
-    // read the real CLI args from `process.argv` (dropping `bun` + script path).
+    // read the real CLI args from `process.argv` (dropping `node` + script path).
     val args =
       if args0.nonEmpty then args0
       else

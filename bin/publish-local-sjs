@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+#
+# Publish the Scala.js build of the compiler and REPL — and their fork-internal
+# transitive dependencies — to the local Ivy repository (~/.ivy2/local), so that
+# other Scala.js sbt/mill builds can depend on them.
+#
+# This publishes CODE ONLY (the _sjs1_3 class/sjsir JARs + POMs + sources). It
+# does NOT ship the runtime archives classpath.bin / linker-libs.bin — those are
+# linker/pack outputs (see `sbt scala3-compiler-sjs/packClasspath packLinkerLibs`)
+# that a consumer must supply to DottyCompiler.loadClasspath()/loadLinkerLibs()
+# at runtime.
+#
+# Published coordinates (version = the build's dottyVersion, e.g.
+# 3.10.0-RC1-bin-SNAPSHOT):
+#   org.scala-lang %%% scala3-compiler   ->  scala3-compiler_sjs1_3
+#   org.scala-lang %%% scala3-repl       ->  scala3-repl_sjs1_3
+# transitive (also published here so the above resolve):
+#   org.scala-lang   scala3-interfaces
+#   org.scala-lang   tasty-core_3
+#   org.scala-lang %%% scala3-library    ->  scala3-library_sjs1_3
+#   org.scala-js     scalajs-scalalib_2.13   (the Scala stdlib for Scala.js)
+# The remaining deps (scalajs-library/-javalib/-linker/-ir) resolve from Central.
+#
+# Usage: bin/publish-local-sjs
+
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
+cd "$ROOT"
+
+# Dependency order: leaves first, then the compiler, then the REPL (which
+# depends on the compiler). `sbt --client` only accepts ONE command per
+# invocation, so publish one at a time against the running server.
+TARGETS=(
+  scala3-interfaces/publishLocal
+  tasty-core-bootstrapped/publishLocal
+  scala-library-sjs/publishLocal
+  scala3-library-sjs/publishLocal
+  scala3-compiler-sjs/publishLocal
+  scala3-repl-sjs/publishLocal
+)
+
+# Pick up build-definition changes (e.g. publish/skip) in the running server.
+sbt --client reload
+
+for t in "${TARGETS[@]}"; do
+  echo "==> $t"
+  sbt --client "$t"
+done
+
+echo "Done. Published to ~/.ivy2/local — add resolverLocal/Resolver.mavenLocal to consumers."

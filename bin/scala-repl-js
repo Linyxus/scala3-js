@@ -26,4 +26,4 @@ if [ -z "$MAIN_JS" ] || [ -z "$DOTTY_CLASSPATH_BIN" ] || [ -z "$DOTTY_LINKER_LIB
   exit 1
 fi
 
-exec bun "$MAIN_JS" "$@"
+exec node "$MAIN_JS" "$@"

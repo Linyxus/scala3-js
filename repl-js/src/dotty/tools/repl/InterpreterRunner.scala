@@ -48,13 +48,19 @@ class InterpreterRunner:
     interp = new Interpreter(Semantics.Defaults)
     interp.loadIRFiles(toIRFiles(InterpreterRunner.parseArchive(libBuffer)))
 
-  /** Clear the value bridge before running a wrapper. */
+  /** Clear the value bridge before running a wrapper.
+   *
+   *  Addressed via `globalThis.__replRenders` (a property on the real global
+   *  object), not a bare `__replRenders` global ref: under a strict-mode runtime
+   *  (Node) assigning to an undeclared bare global throws `ReferenceError`; bun
+   *  tolerated it, Node does not. Must match the wrapper's access built in
+   *  `JSReplCompiler.pushRender`. */
   def resetBridge(): Unit =
-    js.Dynamic.global.__replRenders = new js.Array[Any]()
+    js.Dynamic.global.globalThis.__replRenders = new js.Array[Any]()
 
   /** Collect the `name -> rendered` pairs the wrapper pushed onto the bridge. */
   def readBridge(): Map[String, String] =
-    val arr = js.Dynamic.global.__replRenders.asInstanceOf[js.Array[Any]]
+    val arr = js.Dynamic.global.globalThis.__replRenders.asInstanceOf[js.Array[Any]]
     val b = Map.newBuilder[String, String]
     var i = 0
     while i + 1 < arr.length do

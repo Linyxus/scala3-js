@@ -20,4 +20,4 @@ if [ -z "$MAIN_JS" ]; then
   fi
 fi
 
-exec bun "$MAIN_JS" "$@"
+exec node "$MAIN_JS" "$@"

@@ -1848,7 +1848,15 @@ object Build {
         "-Wconf:src=scalajs-ir-src/.*&msg=Implicit parameters should be provided with a `using` clause:s",
       Compile / scalacOptions +=
         "-Wconf:src=scalajs-ir-src/.*&msg=object AnyRefMap in package scala\\.collection\\.mutable is deprecated:s",
-      publish / skip := true,
+      // Locally publishable (code only) so other Scala.js builds can depend on
+      // the compiler classes/sjsir via `%%% "scala3-compiler"`. Note: this ships
+      // the code, NOT the runtime archives (classpath.bin / linker-libs.bin),
+      // which are linker/pack outputs the consumer must supply at runtime.
+      publish / skip := false,
+      // Don't build/publish the scaladoc jar: generating API docs runs the JS
+      // compiler over its own TASTy and crashes in `readTasty` (ClassPathFactory).
+      // Code + POM are all a downstream dependency needs.
+      Compile / packageDoc / publishArtifact := false,
       bspEnabled := false,
       scalaJSUseMainModuleInitializer := true,
       Compile / mainClass := Some("dotty.tools.dotc.Main"),
@@ -2451,7 +2459,12 @@ object Build {
         ("be.doeraene" % "sjsir-interpreter_sjs1_2.13" % "0.10.0"),
       ),
       target := target.value / "scala3-repl-sjs",
-      publish / skip := true,
+      // Locally publishable (code only) so other Scala.js builds can depend on
+      // the REPL classes via `%%% "scala3-repl"`. Like the compiler-sjs artifact
+      // this is code only — the runtime archives are not part of the JAR.
+      publish / skip := false,
+      // See scala3-compiler-sjs: scaladoc generation crashes the JS compiler.
+      Compile / packageDoc / publishArtifact := false,
       bspEnabled := false,
       scalaJSUseMainModuleInitializer := true,
       Compile / mainClass := Some("dotty.tools.repl.Main"),

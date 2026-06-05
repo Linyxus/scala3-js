@@ -8,7 +8,7 @@
 # Usage:
 #   bin/test-repl-js [FILTER]    # FILTER = substring of test file names to run
 #
-# Each test runs in its own `bun` process, so the REPL session is freshly reset.
+# Each test runs in its own `node` process, so the REPL session is freshly reset.
 
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
