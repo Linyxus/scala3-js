@@ -89,7 +89,10 @@ object CommandLineParser:
 
     inline def badquote() = errorFn(s"Unmatched quote [${qpos.last}](${line.charAt(qpos.last)})")
 
-    inline def skipWhitespace() = while isWhitespace(cur) do bump()
+    // Guard `cur != EOF`: at end of input `cur` is `EOF` (-1), and on Scala.js
+    // `Character.isWhitespace(-1)` throws ArrayIndexOutOfBounds (the JVM returns
+    // false). EOF is not whitespace, so this is behaviour-preserving on the JVM.
+    inline def skipWhitespace() = while cur != EOF && isWhitespace(cur) do bump()
 
     @tailrec def loop(): List[String] =
       skipWhitespace()

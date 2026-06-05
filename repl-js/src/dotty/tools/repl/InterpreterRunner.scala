@@ -21,9 +21,15 @@ import org.scalajs.ir.Version
  *
  *  No linker, no DCE, no ES-module caching — every class is available, so a later
  *  line can reference any member of any earlier class or the library.
+ *
+ *  Crossing the 4th wall: the generated wrapper renders each binding's value
+ *  (inside the interpreter, where the value lives) and pushes `[name, rendered]`
+ *  pairs onto the JS-global array `__replRenders`. [[resetBridge]] clears it
+ *  before a run and [[readBridge]] collects it after.
  */
 class InterpreterRunner:
-  private val interp = new Interpreter(Semantics.Defaults)
+  private var interp = new Interpreter(Semantics.Defaults)
+  private var libBuffer: ArrayBuffer = null.asInstanceOf[ArrayBuffer]
 
   private def toIRFiles(m: Map[String, Array[Byte]]): Seq[IRFile] =
     m.map { case (path, bytes) =>
@@ -32,7 +38,29 @@ class InterpreterRunner:
 
   /** Load the bundled standard-library `.sjsir` (from `linker-libs.bin`) once. */
   def loadLibrary(buffer: ArrayBuffer): Future[Unit] =
+    libBuffer = buffer
     interp.loadIRFiles(toIRFiles(InterpreterRunner.parseArchive(buffer)))
+
+  /** Discard the live VM (a fresh interpreter + reloaded library) for `:reset`.
+   *  Necessary because wrapper names restart at `rs$line$1`, which the old
+   *  interpreter would dedup against the already-loaded class. */
+  def reset(): Future[Unit] =
+    interp = new Interpreter(Semantics.Defaults)
+    interp.loadIRFiles(toIRFiles(InterpreterRunner.parseArchive(libBuffer)))
+
+  /** Clear the value bridge before running a wrapper. */
+  def resetBridge(): Unit =
+    js.Dynamic.global.__replRenders = new js.Array[Any]()
+
+  /** Collect the `name -> rendered` pairs the wrapper pushed onto the bridge. */
+  def readBridge(): Map[String, String] =
+    val arr = js.Dynamic.global.__replRenders.asInstanceOf[js.Array[Any]]
+    val b = Map.newBuilder[String, String]
+    var i = 0
+    while i + 1 < arr.length do
+      b += (arr(i).asInstanceOf[String] -> arr(i + 1).asInstanceOf[String])
+      i += 2
+    b.result()
 
   /** Load a line's freshly-compiled `.sjsir`, then run its wrapper's `replMain`
    *  (which forces the `object rs$line$N` init — running the user code + render). */

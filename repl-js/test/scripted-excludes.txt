@@ -1,0 +1,27 @@
+# Scripted REPL tests that cannot pass on the JS REPL for reasons inherent to
+# the platform (Scala.js runtime / interpreter semantics), not REPL logic bugs.
+# The harness skips these and still exits 0 if every other test passes.
+# Format: <test-file-name>: <reason>
+
+# --- Missing JVM-only libraries on the Scala.js classpath ---
+defaultClassloader: uses java.sql.Date — not implemented in Scala.js
+settings-outputDir: uses java.nio.file.Files/Paths — not implemented in Scala.js
+jar-command: :jar loads .class files from a JAR — no JVM classloader / JAR support in the interpreter
+jar-errors: :jar loads .class files from a JAR — no JVM classloader / JAR support in the interpreter
+jar-multiple: :jar loads .class files from a JAR — no JVM classloader / JAR support in the interpreter
+
+# --- Scala.js runtime semantics differ from the JVM ---
+type-print-import: scala.collection.mutable.Buffer() is a scala.scalajs.js.WrappedArray on Scala.js (renders WrappedArray(), not ArrayBuffer())
+i5218: a whole-number Double passed through Any loses its `.0` under Scala.js numeric erasure (renders 0, not 0.0)
+i15493: value-class display (NInt@hash) + Float `F` suffix rely on JVM boxing identity that Scala.js erases (every Int also isInstanceOf[Float])
+i1369: Scala.js stdout buffers print() with no trailing newline, so output ordering differs
+i9227: the Scala.js backend correctly adds an extra "Macro splicing is not supported on Scala.js" error
+i10355: quotes crash the JS compiler's pickleQuotes phase
+safe-in-cc: capture-checking `safe` mode rejects the REPL's own injected js.Dynamic value-bridge calls
+
+# --- Need full pprint layout / impractical under the interpreter ---
+settings-repl-max-print-elements: needs pprint's multi-line layout (we render single-line)
+settings-repl-max-print-characters: builds a ~68M-character string (1.to(10000000).mkString) — impractically slow to interpret
+
+# --- Minor known gap ---
+i18383: the unused-import warning (E198) is not emitted by CheckUnused under the JS-compiled compiler even with -Wunused:all applied (verified via both :settings and :reset)

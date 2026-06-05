@@ -6,6 +6,7 @@ import dotc.core.Contexts.*
 import dotc.core.Decorators.*
 import dotc.core.Constants.Constant
 import dotc.core.Names.*
+import dotc.core.NameOps.*
 import dotc.core.NameKinds.ReplAssignName
 import dotc.core.Phases.Phase
 import dotc.core.StdNames.{nme, str}
@@ -38,6 +39,12 @@ class JSReplCompiler extends ReplCompiler:
     List(dotc.transform.PostTyper()),
     List(dotc.transform.UnrollDefinitions()),
   )
+
+  /** Drop `JUnitBootstrappers`: it forces `org.junit.Test` (absent from the REPL
+   *  classpath), so `jsdefn.junit.TestAnnotClass` is `NoSymbol` and its `.asClass`
+   *  throws a `ClassCastException` on Scala.js. The REPL never has JUnit tests. */
+  override protected def transformPhases: List[List[Phase]] =
+    super.transformPhases.map(_.filterNot(_.isInstanceOf[dotc.transform.sjs.JUnitBootstrappers]))
 
 /** Mirrors the upstream `ReplPhase` wrapping, but appends the render statements +
  *  the `replMain` trigger to the generated `object rs$line$N`. */
@@ -106,7 +113,7 @@ class JSReplPhase extends Phase:
     val objectTermName = objectName.toTermName
     ReplCompiler.objectNames.update(defs.state.objectIndex, objectTermName)
 
-    val body = defs.stats ++ renderStmts(defs.stats) :+ replMain
+    val body = defs.stats ++ renderPushes(defs.stats) :+ replMain
     val tmpl = Template(emptyConstructor, Nil, Nil, EmptyValDef, body)
     val module = ModuleDef(objectTermName, tmpl).withSpan(span)
     PackageDef(Ident(nme.EMPTY_PACKAGE), List(module))
@@ -119,15 +126,70 @@ class JSReplPhase extends Phase:
     import untpd.*
     DefDef(termName("replMain"), List(Nil), TypeTree(), Literal(Constant(())))
 
-  /** `scala.Predef.println("resN = " + resN)` for each freshly-bound result val. */
-  private def renderStmts(stats: List[untpd.Tree])(using Context): List[untpd.Tree] =
+  /** Crossing the 4th wall, JS-style.
+   *
+   *  For each freshly-bound value field, append a statement that renders its
+   *  runtime value (via `scala.runtime.ReplRenderer.replStringOf`, which runs
+   *  *inside* the interpreter where the value lives) and pushes the pair
+   *  `[name, rendered]` onto the JS global array `__replRenders`. The driver
+   *  resets that array before running the wrapper and reads it back after, then
+   *  feeds the rendered strings into the same `renderVal` flow the JVM REPL uses
+   *  — so the type header comes from the compiler and the value from the VM,
+   *  exactly as on the JVM (where the header is `showUser` and the value is
+   *  reflected + pprinted in the REPL classloader).
+   *
+   *  Lazy vals are deliberately skipped: the JVM REPL never forces them, and
+   *  `replStringOf` would.
+   */
+  private def renderPushes(stats: List[untpd.Tree])(using Context): List[untpd.Tree] =
     import untpd.*
-    stats.collect {
-      case vd: ValDef if vd.name.toString.stripPrefix(str.REPL_RES_PREFIX).toIntOption.isDefined =>
-        val name = vd.name
-        val printlnRef = Select(Select(Ident(termName("scala")), termName("Predef")), termName("println"))
-        // `"name = " + value` (toString). NB: `ScalaRunTime.stringOf` would render
-        // REPL-style but isn't usable (it reflects via java.lang.Class/Package).
-        val concat = Apply(Select(Literal(Constant(s"$name = ")), termName("+")), List(Ident(name)))
-        Apply(printlnRef, List(concat))
+    stats.flatMap {
+      case vd: ValDef if !vd.mods.is(dotc.core.Flags.Lazy) =>
+        List(pushRender(vd.name.toString, Ident(vd.name)))
+      case pd: PatDef if !pd.mods.is(dotc.core.Flags.Lazy) =>
+        // Pattern bindings (`val Some(a) = …`, `val (a, b) = …`) only become
+        // ValDefs after desugaring, so extract the bound names here and push for
+        // each — referencing them by name (they resolve once desugared).
+        pd.pats.flatMap(boundNames).distinct.map(n => pushRender(n, Ident(termName(n))))
+      case _ => Nil
     }
+
+  /** Names introduced by one left-hand side of a `val`/pattern definition. */
+  private def boundNames(pat: untpd.Tree)(using Context): List[String] =
+    import untpd.*
+    pat match
+      case id: Ident if id.name != nme.WILDCARD => List(id.name.toString) // bare lhs ident binds (any case)
+      case other                                => patternVars(other)
+
+  /** Variables bound *inside* a non-trivial pattern (lowercase, non-backquoted,
+   *  non-wildcard idents and `Bind`s) — mirrors `Desugar.getVariables`. */
+  private def patternVars(t: untpd.Tree)(using Context): List[String] =
+    import untpd.*
+    def isVar(id: Ident) = id.name.isVarPattern && !id.isBackquoted && id.name != nme.WILDCARD
+    t match
+      case Bind(nme.WILDCARD, body)         => patternVars(body)
+      case Bind(name, body)                 => name.toString :: patternVars(body)
+      case Typed(id: Ident, _) if isVar(id) => List(id.name.toString)
+      case id: Ident if isVar(id)           => List(id.name.toString)
+      case Apply(_, args)                   => args.flatMap(patternVars)
+      case Typed(expr, _)                   => patternVars(expr)
+      case NamedArg(_, arg)                 => patternVars(arg)
+      case Tuple(trees)                     => trees.flatMap(patternVars)
+      case Parens(p)                        => patternVars(p)
+      case SeqLiteral(elems, _)             => elems.flatMap(patternVars)
+      case Annotated(arg, _)                => patternVars(arg)
+      case Block(Nil, expr)                 => patternVars(expr)
+      case _                                => Nil
+
+  /** Build a dotted selection `a.b.c…` rooted at an `Ident`. */
+  private def dotted(parts: String*)(using Context): untpd.Tree =
+    import untpd.*
+    parts.tail.foldLeft(Ident(termName(parts.head)): Tree)((acc, p) => Select(acc, termName(p)))
+
+  /** `scala.scalajs.js.Dynamic.global.__replRenders.push(name, ReplRenderer.replStringOf(valueRef))` */
+  private def pushRender(name: String, valueRef: untpd.Tree)(using Context): untpd.Tree =
+    import untpd.*
+    val global       = dotted("scala", "scalajs", "js", "Dynamic", "global")
+    val rendersArray = Select(global, termName("__replRenders"))
+    val rendered     = Apply(dotted("scala", "runtime", "ReplRenderer", "replStringOf"), List(valueRef))
+    Apply(Select(rendersArray, termName("push")), List(Literal(Constant(name)), rendered))

@@ -11,52 +11,88 @@ import dotty.tools.io.VirtualDirectory
 /** JS/Node entry point for the Scala 3 REPL compiled to JavaScript.
  *
  *  Loads the bundled `classpath.bin` (for compiling lines) and `linker-libs.bin`
- *  (library `.sjsir` for linking lines) — their paths come from the
- *  `DOTTY_CLASSPATH_BIN` / `DOTTY_LINKER_LIBS_BIN` env vars set by the launcher —
- *  then evaluates each CLI argument as one REPL line (non-interactive proof
- *  stage; the interactive `readline` loop lands in a later milestone).
+ *  (library `.sjsir` for the interpreter) — their paths come from the
+ *  `DOTTY_CLASSPATH_BIN` / `DOTTY_LINKER_LIBS_BIN` env vars set by the launcher.
+ *
+ *  Three modes:
+ *   - `--script <file>`: replay a scripted-test transcript (echo each `scala>`
+ *     line, evaluate it, print the rendered output) — used by the test harness.
+ *   - CLI args: evaluate each argument as one line.
+ *   - no args: interactive `readline` loop.
  */
 object Main:
 
-  def main(args: Array[String]): Unit =
+  def main(args0: Array[String]): Unit =
     if !hasProcess then return
+
+    // With `scalaJSUseMainModuleInitializer`, `main` is invoked with no args, so
+    // read the real CLI args from `process.argv` (dropping `bun` + script path).
+    val args =
+      if args0.nonEmpty then args0
+      else
+        try js.Dynamic.global.process.argv.asInstanceOf[js.Array[String]].jsSlice(2).toArray
+        catch case _: Throwable => args0
 
     val cpPath  = env("DOTTY_CLASSPATH_BIN")
     val libPath = env("DOTTY_LINKER_LIBS_BIN")
     (cpPath, libPath) match
       case (Some(cp), Some(lib)) =>
-        import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
-        val cpDir      = ClasspathBlob.load(readArrayBuffer(cp))         // for compiling lines
+        val cpDir      = ClasspathBlob.load(readArrayBuffer(cp))
         val sessionDir = new VirtualDirectory("(repl-session)", None)
         val runner     = new InterpreterRunner
-        val driver     = new JSReplDriver(cpDir, sessionDir, runner)
 
-        // Load the full standard-library `.sjsir` into the interpreter once, then
-        // start the loop (each line then loads only its own fresh classes).
         runner.loadLibrary(readArrayBuffer(lib)).foreach { _ =>
-          val lines = readCliArgs(args).toList
-          if lines.nonEmpty then runLines(driver, lines, driver.initialState)
-          else interactive(driver)
+          args.toList match
+            case "--script" :: file :: _ =>
+              runScript(cpDir, sessionDir, runner, file)
+            case Nil =>
+              val driver = new JSReplDriver(cpDir, sessionDir, runner)
+              interactive(driver)
+            case lines =>
+              val driver = new JSReplDriver(cpDir, sessionDir, runner)
+              runLines(driver, lines.map(l => s"$Prompt $l"), driver.initialState)
         }
       case _ =>
         Console.err.println("error: set DOTTY_CLASSPATH_BIN and DOTTY_LINKER_LIBS_BIN (use bin/scala-repl-js)")
         setExitCode(1)
 
-  /** Evaluate the lines sequentially: each waits for the previous to finish so
-   *  state threads through and modules load in order. */
+  private val Prompt = "scala>"
+
+  /** Replay a scripted-test file: reproduce the full transcript on stdout so the
+   *  harness can diff it against the file. Mirrors `ReplTest.testScript`. */
+  private def runScript(cpDir: VirtualDirectory, sessionDir: VirtualDirectory,
+                        runner: InterpreterRunner, file: String): Unit =
+    val all = readFileLines(file)
+    // An optional leading `//> using options …` directive becomes compiler
+    // settings (and is echoed as the transcript's first line, as on the JVM).
+    val (optsLine, body) = all.headOption match
+      case Some(h) if h.trim.startsWith("//>") || h.trim.startsWith("// scalac:") => (Some(h), all.tail)
+      case _ => (None, all)
+    val extra = optsLine.map(parseUsingOptions).getOrElse(Nil)
+    val driver = new JSReplDriver(cpDir, sessionDir, runner, extra)
+
+    optsLine.foreach(println)
+    val inputs = body.filter(_.startsWith(Prompt))
+    runLines(driver, inputs, driver.initialState)
+
+  private def parseUsingOptions(line: String): List[String] =
+    val t = line.trim
+    val rest =
+      if t.startsWith("//> using options") then t.stripPrefix("//> using options")
+      else if t.startsWith("// scalac:") then t.stripPrefix("// scalac:")
+      else ""
+    rest.trim.split("\\s+").toList.filter(_.nonEmpty)
+
+  /** Evaluate `scala> …` lines sequentially: echo each verbatim, then feed the
+   *  text after the prompt to the driver (which prints the rendered output). */
   private def runLines(driver: JSReplDriver, lines: List[String], state: State): Unit =
     lines match
       case Nil => ()
       case line :: rest =>
-        println(s"scala> $line")
-        driver.evalLine(line, state).foreach(next => runLines(driver, rest, next))
+        println(line)
+        driver.evalLine(line.drop(Prompt.length), state).foreach(next => runLines(driver, rest, next))
 
-  /** Interactive read-eval-print loop over Node's `readline`.
-   *
-   *  Lines are queued as they arrive and processed one at a time: each line is
-   *  fully evaluated (the eval is async — compile + interpret) before the next
-   *  is pumped, so state threads through in order. A queue (rather than recursive
-   *  `rl.question`) keeps it robust for piped stdin, which closes at EOF. */
+  /** Interactive read-eval-print loop over Node's `readline`. */
   private def interactive(driver: JSReplDriver): Unit =
     val readline = js.Dynamic.global.require("readline")
     val process  = js.Dynamic.global.process
@@ -99,14 +135,6 @@ object Main:
     try { val _ = js.Dynamic.global.process.argv; true }
     catch { case _: Throwable => false }
 
-  private def readCliArgs(args: Array[String]): Array[String] =
-    if args.nonEmpty then args
-    else
-      try
-        val argv = js.Dynamic.global.process.argv.asInstanceOf[js.Array[String]]
-        argv.jsSlice(2).toArray
-      catch case _: Throwable => args
-
   private def env(name: String): Option[String] =
     val v = js.Dynamic.global.process.env.selectDynamic(name)
     if js.isUndefined(v) || v == null then None else Some(v.asInstanceOf[String])
@@ -115,6 +143,12 @@ object Main:
     val fs = js.Dynamic.global.require("fs")
     val u8 = fs.readFileSync(path).asInstanceOf[Uint8Array]
     u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength)
+
+  private def readFileLines(path: String): List[String] =
+    val fs = js.Dynamic.global.require("fs")
+    val content = fs.readFileSync(path, "utf-8").asInstanceOf[String]
+    val arr = content.split("\n", -1).toList
+    if arr.nonEmpty && arr.last == "" then arr.init else arr
 
   private def setExitCode(code: Int): Unit =
     try js.Dynamic.global.process.exitCode = code
