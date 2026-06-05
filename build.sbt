@@ -12,6 +12,8 @@ val `scala3-compiler-sjs` = Build.`scala3-compiler-sjs`
 
 val `scala3-repl` = Build.`scala3-repl`
 
+val `scala3-repl-sjs` = Build.`scala3-repl-sjs`
+
 // The Standard Library
 val `scala2-library` = Build.`scala2-library`
 val `scala-library-nonbootstrapped` = Build.`scala-library-nonbootstrapped`

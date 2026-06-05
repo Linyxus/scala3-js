@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+# Launch the Scala 3 REPL compiled to JavaScript via Scala.js.
+# Rebuilds (fastLinkJS) if main.js is missing.
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" >& /dev/null && pwd)/.."
+
+REPL_DIR="$ROOT/repl-js/target/scala3-repl-sjs"
+CSJS_DIR="$ROOT/compiler-js/target/scala3-compiler-sjs"
+
+MAIN_JS="$(find "$REPL_DIR" -name "main.js" -path "*fastopt*" 2>/dev/null | head -1)"
+if [ -z "$MAIN_JS" ]; then
+  echo "Building scala3-repl-sjs (fastLinkJS)..."
+  (cd "$ROOT" && sbt 'scala3-repl-sjs/fastLinkJS')
+  MAIN_JS="$(find "$REPL_DIR" -name "main.js" -path "*fastopt*" 2>/dev/null | head -1)"
+fi
+
+# The REPL reuses the compiler's bundled classpath.bin (to compile each line)
+# and linker-libs.bin (library .sjsir to link each line).
+export DOTTY_CLASSPATH_BIN="$(find "$CSJS_DIR" -name "classpath.bin" 2>/dev/null | head -1)"
+export DOTTY_LINKER_LIBS_BIN="$(find "$CSJS_DIR" -name "linker-libs.bin" 2>/dev/null | head -1)"
+
+if [ -z "$MAIN_JS" ] || [ -z "$DOTTY_CLASSPATH_BIN" ] || [ -z "$DOTTY_LINKER_LIBS_BIN" ]; then
+  echo "Error: missing main.js or bundled assets." >&2
+  echo "  Run: sbt 'scala3-compiler-sjs/packClasspath' 'scala3-compiler-sjs/packLinkerLibs' 'scala3-repl-sjs/fastLinkJS'" >&2
+  exit 1
+fi
+
+exec bun "$MAIN_JS" "$@"

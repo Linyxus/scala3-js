@@ -2410,6 +2410,54 @@ object Build {
 
     )
 
+  /** The Scala 3 REPL compiled to JavaScript via Scala.js.
+   *
+   *  Depends on `scala3-compiler-sjs` (the JS build of the compiler) and adds
+   *  the portable, compiler-level REPL sources (ReplCompiler/ParseResult/…)
+   *  plus JS-native replacements for the JVM-only pieces (driver, rendering,
+   *  incremental linker, terminal). Each REPL line is compiled with `-scalajs`,
+   *  linked as its own ES module, and dynamically imported into a persistent
+   *  realm — see the project plan / the `repl-js-incremental-linking` notes.
+   */
+  lazy val `scala3-repl-sjs` = project.in(file("repl-js"))
+    .dependsOn(`scala3-compiler-sjs`)
+    .enablePlugins(DottyJSPlugin)
+    .settings(
+      name          := "scala3-repl-sjs",
+      moduleName    := "scala3-repl",
+      version       := dottyVersion,
+      scalaVersion  := dottyNonBootstrappedVersion,
+      crossPaths    := true,
+      autoScalaLibrary := false,
+      bootstrappedScalaInstanceSettings,
+      Compile / unmanagedSourceDirectories := Seq(baseDirectory.value / "src"),
+      // Cherry-pick the portable, compiler-level REPL sources from the JVM repl
+      // project (referenced in place to avoid copy-drift). The JVM-only files
+      // (ReplDriver, Rendering, JLineTerminal, …) are deliberately NOT included;
+      // `State` is provided locally in repl-js/src since upstream defines it
+      // inside ReplDriver.scala.
+      Compile / sources ++= {
+        val replRepo = (LocalProject("scala3-repl") / baseDirectory).value / "src" / "dotty" / "tools" / "repl"
+        Seq("ReplCompiler.scala", "ParseResult.scala", "CollectTopLevelImports.scala", "package.scala")
+          .map(replRepo / _)
+      },
+      // The REPL interprets each line's `.sjsir` with sjrd's sjsir-interpreter
+      // (a persistent class registry + heap, dynamically loadable — no linking,
+      // no DCE). It transitively brings scalajs-linker 1.21.0 (IRFile/Semantics/
+      // ModuleInitializer/MemIRFileImpl). Requires Scala.js 1.21.0.
+      libraryDependencies ++= Seq(
+        ("org.scala-js" %% "scalajs-library" % scalaJSVersion % Provided).cross(CrossVersion.for3Use2_13),
+        ("org.scala-js" % "scalajs-javalib" % scalaJSVersion),
+        ("be.doeraene" % "sjsir-interpreter_sjs1_2.13" % "0.10.0"),
+      ),
+      target := target.value / "scala3-repl-sjs",
+      publish / skip := true,
+      bspEnabled := false,
+      scalaJSUseMainModuleInitializer := true,
+      Compile / mainClass := Some("dotty.tools.repl.Main"),
+      scalaJSLinkerConfig ~= { _.withESFeatures(_.withESVersion(ESVersion.ES2018)) },
+    )
+
   lazy val `scala3-presentation-compiler` = project.in(file("presentation-compiler"))
     .settings(commonBootstrappedSettings)
     .dependsOn(`scala3-compiler-bootstrapped` % "compile->compile;test->test", `scala3-library-bootstrapped`, `scala3-presentation-compiler-testcases` % "test->test")

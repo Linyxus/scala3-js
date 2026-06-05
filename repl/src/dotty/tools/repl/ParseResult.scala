@@ -185,7 +185,10 @@ object ParseResult {
   )
 
   def apply(source: SourceFile)(using state: State): ParseResult = {
-    val sourceCode = source.content().mkString
+    // `source.content` (no parens) works in both the JVM build (the method
+    // overrides the Java `interfaces.SourceFile.content()` and auto-applies) and
+    // the Scala.js build (where `SourceFile.content` is a paren-free Scala def).
+    val sourceCode = source.content.mkString
     sourceCode match {
       case "" => Newline
       case CommandExtract(cmd: String, arg: String) => {
