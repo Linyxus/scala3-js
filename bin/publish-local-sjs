@@ -6,7 +6,7 @@
 #
 # This publishes CODE ONLY (the _sjs1_3 class/sjsir JARs + POMs + sources). It
 # does NOT ship the runtime archives classpath.bin / linker-libs.bin — those are
-# linker/pack outputs (see `sbt scala3-compiler-sjs/packClasspath packLinkerLibs`)
+# linker/pack outputs (see `sbt scala3-compiler-cli-sjs/packClasspath packLinkerLibs`)
 # that a consumer must supply to DottyCompiler.loadClasspath()/loadLinkerLibs()
 # at runtime.
 #
@@ -16,7 +16,9 @@
 #   org.scala-lang %%% scala3-repl       ->  scala3-repl_sjs1_3
 # transitive (also published here so the above resolve):
 #   org.scala-lang   scala3-interfaces
+#   org.scala-lang   scala-library
 #   org.scala-lang   tasty-core_3
+#   org.scala-lang   scala3-library_3
 #   org.scala-lang %%% scala3-library    ->  scala3-library_sjs1_3
 #   org.scala-js     scalajs-scalalib_2.13   (the Scala stdlib for Scala.js)
 # The remaining deps (scalajs-library/-javalib/-linker/-ir) resolve from Central.
@@ -32,7 +34,10 @@ cd "$ROOT"
 # invocation, so publish one at a time against the running server.
 TARGETS=(
   scala3-interfaces/publishLocal
+  scala2-library/publishLocal
+  scala-library-bootstrapped/publishLocal
   tasty-core-bootstrapped/publishLocal
+  scala3-library-bootstrapped/publishLocal
   scala-library-sjs/publishLocal
   scala3-library-sjs/publishLocal
   scala3-compiler-sjs/publishLocal

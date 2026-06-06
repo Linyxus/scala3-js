@@ -1,13 +1,11 @@
 # Scala 3 Compiler on JavaScript (compiler-js)
 
-The `compiler-js/` subproject compiles the Scala 3 compiler itself to JavaScript
-via Scala.js.
+The `compiler-js/` subproject compiles the Scala 3 compiler itself to a
+publishable Scala.js library. Executable/browser roots live in wrapper projects:
 
-It currently supports two execution modes:
-
-- **Node.js CLI** via `main.js` / `bin/scalac-js` for file-based compilation
-- **Browser API** via the exported `DottyCompiler` object for in-memory compile
-  and compile-and-link flows
+- **Node.js CLI** via `scala3-compiler-cli-sjs` / `bin/scalac-js`
+- **Browser API** via `scala3-compiler-browser-sjs`, which exports
+  `DottyCompiler` for in-memory compile and compile-and-link flows
 
 The compiler frontend is functional: parsing, type-checking, error reporting,
 and capture checking all work. The Scala.js backend (`-scalajs`) also works, so
@@ -19,12 +17,13 @@ emit `.class` files.
 
 ```bash
 # Build the JS compiler and bundle library directories for the CLI:
-sbt --client scala3-compiler-sjs/fastLinkJS
-sbt --client scala3-compiler-sjs/bundleLibs
+sbt --client scala3-compiler-cli-sjs/fastLinkJS
+sbt --client scala3-compiler-cli-sjs/bundleLibs
 
 # Optional: build packed assets for the browser API:
-sbt --client scala3-compiler-sjs/packClasspath
-sbt --client scala3-compiler-sjs/packLinkerLibs
+sbt --client scala3-compiler-browser-sjs/fastLinkJS
+sbt --client scala3-compiler-cli-sjs/packClasspath
+sbt --client scala3-compiler-cli-sjs/packLinkerLibs
 
 # Compile a Scala file (frontend only; no .class output):
 mkdir -p /tmp/out
@@ -50,10 +49,11 @@ shared sources.
 
 The current tree has about 110 source files in `compiler-js/src/`. Roughly 60
 are direct overrides of shared compiler or tasty sources; the rest are
-Scala.js-specific support files, entry points, and API stubs. Most overrides are
-shims for JVM APIs not available in Scala.js (java.nio.file, java.util.zip,
-java.lang.reflect, xsbti, etc.). A handful adapt compiler code to avoid
-reflection or JVM-specific features.
+Scala.js-specific support files and API stubs. Entrypoints live in
+`compiler-js-cli/` and `compiler-js-browser/`. Most overrides are shims for JVM
+APIs not available in Scala.js (java.nio.file, java.util.zip, java.lang.reflect,
+xsbti, etc.). A handful adapt compiler code to avoid reflection or JVM-specific
+features.
 
 ### Bundled libraries (`bundleLibs`)
 
@@ -61,7 +61,7 @@ The JS compiler needs class files on its classpath just like the JVM compiler.
 The `bundleLibs` SBT task extracts them to a `lib/` directory:
 
 ```
-compiler-js/target/.../lib/
+compiler-js-cli/target/.../lib/
   jdk/            ← java.base classes (from jmod)
   scala-lib/      ← scala2 + scala3 library classes and .tasty files
   scalajs-lib/    ← scalajs-library classes (needed for -scalajs)
@@ -79,7 +79,7 @@ Sources:
 - **sjsir/**: Extracted from `scalajs-library`, `scalajs-javalib`, and the local
   `scala-library-sjs` class directory
 
-The `lib/` directory is placed as a sibling of the `scala3-compiler-fastopt/`
+The `lib/` directory is placed as a sibling of the `scala3-compiler-cli-fastopt/`
 directory (not inside it, because the Scala.js linker cleans its output
 directory on re-link). Extraction is cached — delete `lib/` to force
 re-extraction.
@@ -89,8 +89,8 @@ re-extraction.
 The browser API uses packed archives instead of filesystem directories:
 
 ```
-compiler-js/target/.../
-  scala3-compiler-fastopt/
+compiler-js-cli/target/.../
+  scala3-compiler-cli-fastopt/
     main.js
     main.js.map
   lib/
@@ -121,17 +121,20 @@ module-scoped variable in Node.js, not a property of `global`.
 
 ### SBT project
 
-Defined in `project/Build.scala` as `scala3-compiler-sjs`:
+Defined in `project/Build.scala`:
 
-- Depends on `scala3-interfaces`, `tasty-core-bootstrapped`, `scala3-library-sjs`
-- Uses `compiler-js/src` first, then shared compiler sources, bootstrapped-only
+- `scala3-compiler-sjs` is the publishable library. It depends on
+  `scala3-interfaces`, `tasty-core-bootstrapped`, and `scala3-library-sjs`.
+  It uses `compiler-js/src` first, then shared compiler sources, bootstrapped-only
   sources, tasty-core sources, and generated `scalajs-ir` sources
-- Compiled with the non-bootstrapped compiler
-- `scalaJSUseMainModuleInitializer := true` with `Compile / mainClass := Some("dotty.tools.dotc.Main")`
-- ES2018 target (needed for regex MULTILINE flag support)
-- Provides the maintenance tasks `compile`, `fastLinkJS`, `bundleLibs`,
-  `packClasspath`, and `packLinkerLibs`
-- Fetches and repackages `scalajs-ir` sources (same as the bootstrapped compiler)
+- It has no main module initializer and no `@JSExportTopLevel` root.
+- `scala3-compiler-cli-sjs` links `dotty.tools.dotc.Main` and owns
+  `bundleLibs`, `packClasspath`, `packLinkerLibs`, `buildBinary`, and
+  `buildBinaryAll`.
+- `scala3-compiler-browser-sjs` exports `DottyCompiler`.
+- All three use an ES2018 target (needed for regex MULTILINE flag support).
+- The library fetches and repackages `scalajs-ir` sources (same as the
+  bootstrapped compiler).
 
 ### Key overrides and additions
 
@@ -156,7 +159,7 @@ stubbed (only unpacked class directories work as classpath entries).
 **sbt integration** — `ExtractAPI`, `ShowAPI`, `ThunkHolder`, and callback
 interfaces are stubbed to remove the dependency on zinc/sbt internals.
 
-**BrowserMain / BrowserLinker** — JS-specific entry points for in-memory browser
+**BrowserMain / BrowserLinker** — JS-specific browser wrapper/API for in-memory
 compilation and compile-and-link flows, backed by `classpath.bin` and
 `linker-libs.bin`.
 
@@ -185,10 +188,10 @@ it.
 
 ```bash
 # Build a binary for the host platform → dist/scala3
-sbt --client scala3-compiler-sjs/buildBinary
+sbt --client scala3-compiler-cli-sjs/buildBinary
 
 # Build the full release matrix → dist/scala3-{darwin,linux}-{arm64,x64}[, .exe]
-sbt --client scala3-compiler-sjs/buildBinaryAll
+sbt --client scala3-compiler-cli-sjs/buildBinaryAll
 ```
 
 `bin/scala3` execs `dist/scala3`, building it on demand if missing.
@@ -237,20 +240,21 @@ uses `eval`).
 
 ## JavaScript API
 
-The generated `main.js` exposes two usage modes: a Node.js CLI entry point and a
+The wrapper projects generate separate `main.js` files for the Node.js CLI and
 browser-facing API.
 
 ### Node.js (CLI)
 
-When loaded in Node.js, `main.js` runs immediately as a CLI tool. It reads
-arguments from `process.argv`, auto-detects bundled libraries, and invokes the
-compiler. There is no API to call — it behaves like a standard command-line
-compiler.
+`scala3-compiler-cli-sjs` links `dotty.tools.dotc.Main`. When loaded in Node.js,
+its `main.js` runs immediately as a CLI tool. It reads arguments from
+`process.argv`, auto-detects bundled libraries, and invokes the compiler. There
+is no API to call — it behaves like a standard command-line compiler.
 
 ### Browser (`DottyCompiler`)
 
-When loaded in a browser (via a `<script>` tag), `main.js` exports a global
-`DottyCompiler` object with the following primary methods:
+`scala3-compiler-browser-sjs` links `BrowserMain`. When loaded in a browser
+(via a `<script>` tag), its `main.js` exports a global `DottyCompiler` object
+with the following primary methods:
 
 #### `DottyCompiler.loadClasspath(buffer: ArrayBuffer): void`
 

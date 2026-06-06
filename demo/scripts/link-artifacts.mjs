@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Find the latest *-nonbootstrapped/ directory under
-// compiler-js/target/scala3-compiler-sjs/ and symlink the four compiler
+// compiler-js-browser/target/scala3-compiler-browser-sjs/ and
+// compiler-js-cli/target/scala3-compiler-cli-sjs/, then symlink the compiler
 // artifacts into demo/public/. Runs as a predev / prebuild hook.
 
 import fs from 'node:fs';
@@ -10,7 +11,8 @@ import url from 'node:url';
 const here = path.dirname(url.fileURLToPath(import.meta.url));
 const demoRoot = path.resolve(here, '..');
 const repoRoot = path.resolve(demoRoot, '..');
-const targetRoot = path.join(repoRoot, 'compiler-js', 'target', 'scala3-compiler-sjs');
+const browserTargetRoot = path.join(repoRoot, 'compiler-js-browser', 'target', 'scala3-compiler-browser-sjs');
+const cliTargetRoot = path.join(repoRoot, 'compiler-js-cli', 'target', 'scala3-compiler-cli-sjs');
 const publicDir = path.join(demoRoot, 'public');
 
 function die(msg) {
@@ -18,37 +20,49 @@ function die(msg) {
   process.exit(1);
 }
 
-if (!fs.existsSync(targetRoot)) {
+if (!fs.existsSync(browserTargetRoot)) {
   die(
-    `compiler-js target dir not found at ${targetRoot}\n` +
-    `  Run from repo root: sbt 'project scala3-compiler-sjs' 'fastLinkJS; bundleLibs; packClasspath; packLinkerLibs'`,
+    `compiler browser target dir not found at ${browserTargetRoot}\n` +
+    `  Run from repo root: sbt --client 'scala3-compiler-browser-sjs/fastLinkJS' 'scala3-compiler-cli-sjs/packClasspath' 'scala3-compiler-cli-sjs/packLinkerLibs'`,
   );
 }
 
-const candidates = fs
-  .readdirSync(targetRoot, { withFileTypes: true })
-  .filter((d) => d.isDirectory() && d.name.endsWith('-nonbootstrapped'))
-  .map((d) => {
-    const dir = path.join(targetRoot, d.name);
-    return { name: d.name, dir, mtime: fs.statSync(dir).mtimeMs };
-  })
-  .sort((a, b) => b.mtime - a.mtime);
-
-if (candidates.length === 0) {
+if (!fs.existsSync(cliTargetRoot)) {
   die(
-    `No *-nonbootstrapped/ directory under ${targetRoot}\n` +
-    `  Run: sbt 'project scala3-compiler-sjs' fastLinkJS`,
+    `compiler CLI target dir not found at ${cliTargetRoot}\n` +
+    `  Run from repo root: sbt --client 'scala3-compiler-browser-sjs/fastLinkJS' 'scala3-compiler-cli-sjs/packClasspath' 'scala3-compiler-cli-sjs/packLinkerLibs'`,
   );
 }
 
-const base = candidates[0];
-console.log(`[link-artifacts] using ${base.name}`);
+function latestBase(targetRoot, label) {
+  const candidates = fs
+    .readdirSync(targetRoot, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && d.name.endsWith('-nonbootstrapped'))
+    .map((d) => {
+      const dir = path.join(targetRoot, d.name);
+      return { name: d.name, dir, mtime: fs.statSync(dir).mtimeMs };
+    })
+    .sort((a, b) => b.mtime - a.mtime);
+
+  if (candidates.length === 0) {
+    die(
+      `No *-nonbootstrapped/ directory under ${targetRoot}\n` +
+      `  Run: sbt --client '${label}/fastLinkJS'`,
+    );
+  }
+
+  return candidates[0];
+}
+
+const browserBase = latestBase(browserTargetRoot, 'scala3-compiler-browser-sjs');
+const cliBase = latestBase(cliTargetRoot, 'scala3-compiler-cli-sjs');
+console.log(`[link-artifacts] using browser ${browserBase.name}, assets ${cliBase.name}`);
 
 const sources = {
-  'main.js': path.join(base.dir, 'scala3-compiler-fastopt', 'main.js'),
-  'main.js.map': path.join(base.dir, 'scala3-compiler-fastopt', 'main.js.map'),
-  'classpath.bin': path.join(base.dir, 'classpath.bin'),
-  'linker-libs.bin': path.join(base.dir, 'linker-libs.bin'),
+  'main.js': path.join(browserBase.dir, 'scala3-compiler-browser-fastopt', 'main.js'),
+  'main.js.map': path.join(browserBase.dir, 'scala3-compiler-browser-fastopt', 'main.js.map'),
+  'classpath.bin': path.join(cliBase.dir, 'classpath.bin'),
+  'linker-libs.bin': path.join(cliBase.dir, 'linker-libs.bin'),
 };
 
 const required = ['main.js', 'classpath.bin', 'linker-libs.bin'];
@@ -57,7 +71,7 @@ const missing = required.filter((name) => !fs.existsSync(sources[name]));
 if (missing.length > 0) {
   die(
     `missing artifacts: ${missing.join(', ')}\n` +
-    `  Run: sbt 'project scala3-compiler-sjs' 'fastLinkJS; bundleLibs; packClasspath; packLinkerLibs'`,
+    `  Run: sbt --client 'scala3-compiler-browser-sjs/fastLinkJS' 'scala3-compiler-cli-sjs/packClasspath' 'scala3-compiler-cli-sjs/packLinkerLibs'`,
   );
 }
 

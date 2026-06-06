@@ -5,15 +5,15 @@
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" >& /dev/null && pwd)/.."
 
-FASTOPT_DIR="$ROOT/compiler-js/target/scala3-compiler-sjs"
+FASTOPT_DIR="$ROOT/compiler-js-cli/target/scala3-compiler-cli-sjs"
 
 # Find main.js under the fastopt output (version-dependent path)
-MAIN_JS="$(find "$FASTOPT_DIR" -name "main.js" -path "*/scala3-compiler-fastopt/*" 2>/dev/null | head -1)"
+MAIN_JS="$(find "$FASTOPT_DIR" -name "main.js" -path "*/scala3-compiler-cli-fastopt/*" 2>/dev/null | head -1)"
 
 if [ -z "$MAIN_JS" ]; then
-  echo "Building compiler-js (fastLinkJS + bundleLibs)..."
-  (cd "$ROOT" && sbt 'project scala3-compiler-sjs' fastLinkJS bundleLibs)
-  MAIN_JS="$(find "$FASTOPT_DIR" -name "main.js" -path "*/scala3-compiler-fastopt/*" 2>/dev/null | head -1)"
+  echo "Building compiler-js CLI (fastLinkJS + bundleLibs)..."
+  (cd "$ROOT" && sbt --client 'scala3-compiler-cli-sjs/fastLinkJS' 'scala3-compiler-cli-sjs/bundleLibs')
+  MAIN_JS="$(find "$FASTOPT_DIR" -name "main.js" -path "*/scala3-compiler-cli-fastopt/*" 2>/dev/null | head -1)"
   if [ -z "$MAIN_JS" ]; then
     echo "Error: failed to build compiler-js" >&2
     exit 1

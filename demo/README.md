@@ -9,13 +9,14 @@ compilation and Scala.js linking happen entirely on the client — no server.
 You need the compiler artifacts produced by SBT. From the repository root:
 
 ```bash
-sbt 'project scala3-compiler-sjs' \
-    'fastLinkJS; bundleLibs; packClasspath; packLinkerLibs'
+sbt --client 'scala3-compiler-browser-sjs/fastLinkJS'
+sbt --client 'scala3-compiler-cli-sjs/packClasspath'
+sbt --client 'scala3-compiler-cli-sjs/packLinkerLibs'
 ```
 
-This produces `main.js`, `classpath.bin`, and `linker-libs.bin` under
-`compiler-js/target/scala3-compiler-sjs/<scalaVersion>-nonbootstrapped/`.
-A small script in this project picks them up automatically.
+This produces browser `main.js` under `compiler-js-browser/target/...` and
+`classpath.bin` / `linker-libs.bin` under `compiler-js-cli/target/...`. A small
+script in this project picks them up automatically.
 
 ## Develop
 

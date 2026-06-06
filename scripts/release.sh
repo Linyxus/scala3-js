@@ -101,8 +101,8 @@ fi
 if [ "$SKIP_BUILDS" -eq 1 ]; then
   echo "==> Skipping build (--skip-builds); using existing binaries in dist/"
 else
-  echo "==> Building all binaries (sbt scala3-compiler-sjs/buildBinaryAll)..."
-  sbt 'project scala3-compiler-sjs' buildBinaryAll
+  echo "==> Building all binaries (sbt scala3-compiler-cli-sjs/buildBinaryAll)..."
+  sbt --client 'scala3-compiler-cli-sjs/buildBinaryAll'
 fi
 
 # Expected matrix outputs — keep in sync with `binaryTargets` in project/Build.scala.

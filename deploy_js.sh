@@ -11,15 +11,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 OUT="$ROOT/scalac-web"
 
-FASTOPT_DIR="$ROOT/compiler-js/target/scala3-compiler-sjs/scala-3.8.4-RC1-bin-SNAPSHOT-nonbootstrapped/scala3-compiler-fastopt"
-CLASSPATH_BIN="$ROOT/compiler-js/target/scala3-compiler-sjs/scala-3.8.4-RC1-bin-SNAPSHOT-nonbootstrapped/classpath.bin"
-LINKER_LIBS_BIN="$ROOT/compiler-js/target/scala3-compiler-sjs/scala-3.8.4-RC1-bin-SNAPSHOT-nonbootstrapped/linker-libs.bin"
+FASTOPT_DIR="$ROOT/compiler-js-browser/target/scala3-compiler-browser-sjs/scala-3.8.4-RC1-bin-SNAPSHOT-nonbootstrapped/scala3-compiler-browser-fastopt"
+ASSET_DIR="$ROOT/compiler-js-cli/target/scala3-compiler-cli-sjs/scala-3.8.4-RC1-bin-SNAPSHOT-nonbootstrapped"
+CLASSPATH_BIN="$ASSET_DIR/classpath.bin"
+LINKER_LIBS_BIN="$ASSET_DIR/linker-libs.bin"
 INDEX_HTML="$ROOT/compiler-js/browser-test/index.html"
 
 # --- Build step (unless --no-build) ---
 if [[ "${1:-}" != "--no-build" ]]; then
   echo "==> Building compiler JS and packing classpath + linker libs..."
-  sbt 'project scala3-compiler-sjs' 'compile; fullLinkJS; packClasspath; packLinkerLibs'
+  sbt --client 'scala3-compiler-browser-sjs/fullLinkJS' 'scala3-compiler-cli-sjs/packClasspath' 'scala3-compiler-cli-sjs/packLinkerLibs'
 fi
 
 # --- Verify artifacts exist ---

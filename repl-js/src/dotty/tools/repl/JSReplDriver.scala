@@ -50,7 +50,9 @@ class JSReplDriver(
   sessionDir: VirtualDirectory,
   runner: InterpreterRunner,
   extraSettings: List[String] = Nil,
+  output: String => Unit = s => { js.Dynamic.global.process.stdout.write(s); () },
 ) extends Driver:
+  import JSReplDriver.EvalResult
 
   override def sourcesRequired: Boolean = false
 
@@ -105,34 +107,39 @@ class JSReplDriver(
 
   // --- output ----------------------------------------------------------------
 
-  private def emit(s: String): Unit =
-    js.Dynamic.global.process.stdout.write(s); ()
+  private def emit(s: String): Unit = output(s)
   private def outPrintln(s: String): Unit = emit(s + "\n")
 
   // --- per-line evaluation ---------------------------------------------------
 
   /** Evaluate one line of input, returning the next REPL state. */
   def evalLine(input: String, state: State): Future[State] =
+    evalLineResult(input, state).map(_.state)
+
+  /** Evaluate one line of input, returning success/error metadata as well as
+   *  the next REPL state. Intended for machine protocols such as JSONL stdio. */
+  def evalLineResult(input: String, state: State): Future[EvalResult] =
     given State = state
     interpret(ParseResult.complete(input))
 
-  private def interpret(res: ParseResult)(using state: State): Future[State] =
+  private def interpret(res: ParseResult)(using state: State): Future[EvalResult] =
     res match
       case parsed: Parsed if parsed.source.content.mkString.startsWith("//>") =>
         outPrintln("Please use `:dep com.example::artifact:version` to add dependencies in the REPL")
-        Future.successful(state)
+        Future.successful(success(state))
       case parsed: Parsed if parsed.trees.nonEmpty =>
         propagateLanguageImports(parsed.trees)
         compile(parsed, state)
       case SyntaxErrors(_, errs, _) =>
-        Future.successful(displayErrors(errs, state))
+        val next = displayErrors(errs, state)
+        Future.successful(failure(next, diagnosticsMessage(errs)))
       case cmd: Command =>
         interpretCommand(cmd)
       case _ =>
-        Future.successful(state)
+        Future.successful(success(state))
 
   /** Compile `parsed`, run the wrapper, then render its definitions. */
-  private def compile(parsed: Parsed, istate: State): Future[State] =
+  private def compile(parsed: Parsed, istate: State): Future[EvalResult] =
     def extractNewestWrapper(tree: untpd.Tree): Name = tree match
       case PackageDef(_, (obj: untpd.ModuleDef) :: Nil) => obj.name.moduleClassName
       case _ => nme.NO_NAME
@@ -142,7 +149,10 @@ class JSReplDriver(
       state0.copy(context = state0.context.withSource(parsed.source))
 
     compiler.compile(parsed).fold(
-      { case (errs, newState) => Future.successful(displayErrors(errs, newState)) },
+      { case (errs, newState) =>
+        val next = displayErrors(errs, newState)
+        Future.successful(failure(next, diagnosticsMessage(errs)))
+      },
       { case (unit, newState) =>
         val newestWrapper = extractNewestWrapper(unit.untpdTree)
         val newImports = extractTopLevelImports(newState.context)
@@ -167,7 +177,9 @@ class JSReplDriver(
             (if istate.quiet then warnings else definitions ++ warnings)
               .sorted
               .foreach(printDiagnostic)
-            updatedState
+            runError match
+              case Some(e) => failure(updatedState, throwableMessage(e))
+              case None    => success(updatedState)
         }
       }
     )
@@ -268,16 +280,16 @@ class JSReplDriver(
 
   // --- commands --------------------------------------------------------------
 
-  private def interpretCommand(cmd: Command)(using state: State): Future[State] = cmd match
+  private def interpretCommand(cmd: Command)(using state: State): Future[EvalResult] = cmd match
     case UnknownCommand(cmd) =>
       outPrintln(s"""Unknown command: "$cmd", run ":help" for a list of commands""")
-      Future.successful(state)
+      Future.successful(success(state))
     case AmbiguousCommand(cmd, matching) =>
       outPrintln(s""""$cmd" matches ${matching.mkString(", ")}. Try typing a few more characters. Run ":help" for a list of commands""")
-      Future.successful(state)
+      Future.successful(success(state))
     case Help =>
       outPrintln(Help.text)
-      Future.successful(state)
+      Future.successful(success(state))
     case Reset(arg) =>
       val tokens = splitArgs(arg)
       if tokens.nonEmpty then
@@ -286,70 +298,81 @@ class JSReplDriver(
                        |""".stripMargin)
       else
         outPrintln("Resetting REPL state.")
-      resetToInitial(tokens)
-      runner.reset().flatMap { _ =>
-        val initScript = rootCtx.settings.replInitScript.value(using rootCtx)
-        if initScript.trim.nonEmpty then evalLine(initScript, initialState)
-        else Future.successful(initialState)
-      }
+      resetState(tokens).map(success)
     case Imports =>
       for
         objectIndex <- state.validObjectIndexes
         imp <- state.imports.getOrElse(objectIndex, Nil)
       do outPrintln(imp.show(using state.context))
-      Future.successful(state)
+      Future.successful(success(state))
     case TypeOf(expr) =>
       expr match
-        case "" => outPrintln(":type <expression>")
+        case "" =>
+          outPrintln(":type <expression>")
+          Future.successful(success(state))
         case _ =>
           compiler.typeOf(expr)(using newRun(state)).fold(
-            errs => displayErrors(errs, state),
-            res => outPrintln(res)
+            errs => Future.successful(failure(displayErrors(errs, state), diagnosticsMessage(errs))),
+            res =>
+              outPrintln(res)
+              Future.successful(success(state))
           )
-      Future.successful(state)
     case DocOf(expr) =>
       expr match
-        case "" => outPrintln(":doc <expression>")
+        case "" =>
+          outPrintln(":doc <expression>")
+          Future.successful(success(state))
         case _ =>
           compiler.docOf(expr)(using newRun(state)).fold(
-            errs => displayErrors(errs, state),
-            res => outPrintln(res)
+            errs => Future.successful(failure(displayErrors(errs, state), diagnosticsMessage(errs))),
+            res =>
+              outPrintln(res)
+              Future.successful(success(state))
           )
-      Future.successful(state)
     case Settings(arg) => arg match
       case "" =>
         given ctx: Context = state.context
         for s <- ctx.settings.userSetSettings(ctx.settingsState).sortBy(_.name) do
           outPrintln(s"${s.name} = ${if s.value == "" then "\"\"" else s.value}")
-        Future.successful(state)
+        Future.successful(success(state))
       case _ =>
         // Reconfigure on the *current* base (so prior wrappers stay valid) via
         // the full `setup` path — this applies multi-choice settings like
         // `-Wunused:all` exactly as `:reset` does.
         rootCtx = setupOn(rootCtx, splitArgs(arg))
-        Future.successful(state.copy(context = rootCtx))
+        Future.successful(success(state.copy(context = rootCtx)))
     case Silent =>
-      Future.successful(state.copy(quiet = !state.quiet))
+      Future.successful(success(state.copy(quiet = !state.quiet)))
     case Quit =>
-      Future.successful(state)
+      Future.successful(success(state))
     case Require(_) =>
       outPrintln(":require is no longer supported, but has been replaced with :jar. Please use :jar")
-      Future.successful(state)
+      Future.successful(success(state))
     case JarCmd(path) =>
       outPrintln(s"""Cannot add "$path" to classpath.""")
-      Future.successful(state)
+      Future.successful(success(state))
     case KindOf(_) =>
       outPrintln("The :kind command is not currently supported.")
-      Future.successful(state)
+      Future.successful(success(state))
     case Sh(_) =>
       outPrintln("""The :sh command is deprecated. Use `import scala.sys.process._` and `"command".!` instead.""")
-      Future.successful(state)
+      Future.successful(success(state))
     case Load(_) =>
       outPrintln(":load is not supported in the JS REPL")
-      Future.successful(state)
+      Future.successful(success(state))
     case Dep(_) =>
       outPrintln(":dep is not supported in the JS REPL")
-      Future.successful(state)
+      Future.successful(success(state))
+
+  /** Reset compiler, rendered state, session output, and interpreter. */
+  def resetState(settings: List[String] = Nil): Future[State] =
+    resetToInitial(settings)
+    sessionDir.clear()
+    runner.reset().flatMap { _ =>
+      val initScript = rootCtx.settings.replInitScript.value(using rootCtx)
+      if initScript.trim.nonEmpty then evalLine(initScript, initialState)
+      else Future.successful(initialState)
+    }
 
   /** Reset compiler/rendering/root context (the interpreter is reset separately). */
   private def resetToInitial(settings: List[String]): Unit =
@@ -357,6 +380,18 @@ class JSReplDriver(
     compiler = new JSReplCompiler
     fed.clear()
     ReplCompiler.objectNames.clear()
+
+  private def success(state: State): EvalResult =
+    EvalResult(state, ok = true, error = None)
+
+  private def failure(state: State, error: String): EvalResult =
+    EvalResult(state, ok = false, error = Some(error))
+
+  private def diagnosticsMessage(errs: Seq[Diagnostic]): String =
+    errs.map(_.msg.message).mkString("\n")
+
+  private def throwableMessage(e: Throwable): String =
+    Option(e.getMessage).filter(_.nonEmpty).getOrElse(e.getClass.getName)
 
   // --- helpers ---------------------------------------------------------------
 
@@ -431,3 +466,6 @@ class JSReplDriver(
   private def printDiagnostic(dia: Diagnostic)(using state: State): Unit = dia.level match
     case interfaces.Diagnostic.INFO => outPrintln(dia.msg.message)
     case _                          => ReplConsoleReporter.doReport(dia)(using state.context)
+
+object JSReplDriver:
+  final case class EvalResult(state: State, ok: Boolean, error: Option[String])
