@@ -2019,41 +2019,51 @@ object Build {
           }
         }
 
-        s.log.info(s"Packing ${entries.size} classpath files into ${outputFile.getName}...")
+        // Only re-pack when an input file changed or the archive is missing, so
+        // launchers can run this on every start as a cheap no-op (see
+        // bin/common-repl-js). Keyed on the actual entry files.
+        val inputs = entries.map(_._2).toSet
+        val cached = FileFunction.cached(
+          s.cacheDirectory / "packClasspath", FilesInfo.lastModified, FilesInfo.exists
+        ) { (_: Set[File]) =>
+          s.log.info(s"Packing ${entries.size} classpath files into ${outputFile.getName}...")
 
-        // Build data buffer and index
-        val dataStream = new java.io.ByteArrayOutputStream()
-        val index = new _root_.scala.collection.mutable.LinkedHashMap[String, (Int, Int)]()
-        var offset = 0
+          // Build data buffer and index
+          val dataStream = new java.io.ByteArrayOutputStream()
+          val index = new _root_.scala.collection.mutable.LinkedHashMap[String, (Int, Int)]()
+          var offset = 0
 
-        for ((rel, file) <- entries) {
-          val bytes = IO.readBytes(file)
-          index(rel) = (offset, bytes.length)
-          dataStream.write(bytes)
-          offset += bytes.length
+          for ((rel, file) <- entries) {
+            val bytes = IO.readBytes(file)
+            index(rel) = (offset, bytes.length)
+            dataStream.write(bytes)
+            offset += bytes.length
+          }
+
+          // Build JSON index
+          val jsonEntries = index.map { case (path, (off, size)) =>
+            s""""$path":[$off,$size]"""
+          }.mkString("{", ",", "}")
+          val indexBytes = jsonEntries.getBytes("UTF-8")
+
+          // Write archive: [4 bytes: index length] [index JSON] [data]
+          val out = new java.io.BufferedOutputStream(new java.io.FileOutputStream(outputFile))
+          try {
+            // Big-endian uint32 for index length
+            out.write((indexBytes.length >> 24) & 0xff)
+            out.write((indexBytes.length >> 16) & 0xff)
+            out.write((indexBytes.length >> 8) & 0xff)
+            out.write(indexBytes.length & 0xff)
+            out.write(indexBytes)
+            dataStream.writeTo(out)
+          } finally {
+            out.close()
+          }
+
+          s.log.info(s"Wrote ${outputFile.length()} bytes to ${outputFile.getAbsolutePath}")
+          Set(outputFile)
         }
-
-        // Build JSON index
-        val jsonEntries = index.map { case (path, (off, size)) =>
-          s""""$path":[$off,$size]"""
-        }.mkString("{", ",", "}")
-        val indexBytes = jsonEntries.getBytes("UTF-8")
-
-        // Write archive: [4 bytes: index length] [index JSON] [data]
-        val out = new java.io.BufferedOutputStream(new java.io.FileOutputStream(outputFile))
-        try {
-          // Big-endian uint32 for index length
-          out.write((indexBytes.length >> 24) & 0xff)
-          out.write((indexBytes.length >> 16) & 0xff)
-          out.write((indexBytes.length >> 8) & 0xff)
-          out.write(indexBytes.length & 0xff)
-          out.write(indexBytes)
-          dataStream.writeTo(out)
-        } finally {
-          out.close()
-        }
-
-        s.log.info(s"Wrote ${outputFile.length()} bytes to ${outputFile.getAbsolutePath}")
+        cached(inputs)
         outputFile
       },
       // Task to pack .sjsir library files into linker-libs.bin
@@ -2068,37 +2078,46 @@ object Build {
           (rel, f)
         }
 
-        s.log.info(s"Packing ${entries.size} .sjsir files into ${outputFile.getName}...")
+        // Cached like packClasspath: only re-pack when a .sjsir input changed or
+        // the archive is missing, so launchers can run it every start cheaply.
+        val inputs = entries.map(_._2).toSet
+        val cached = FileFunction.cached(
+          s.cacheDirectory / "packLinkerLibs", FilesInfo.lastModified, FilesInfo.exists
+        ) { (_: Set[File]) =>
+          s.log.info(s"Packing ${entries.size} .sjsir files into ${outputFile.getName}...")
 
-        val dataStream = new java.io.ByteArrayOutputStream()
-        val index = new _root_.scala.collection.mutable.LinkedHashMap[String, (Int, Int)]()
-        var offset = 0
+          val dataStream = new java.io.ByteArrayOutputStream()
+          val index = new _root_.scala.collection.mutable.LinkedHashMap[String, (Int, Int)]()
+          var offset = 0
 
-        for ((rel, file) <- entries) {
-          val bytes = IO.readBytes(file)
-          index(rel) = (offset, bytes.length)
-          dataStream.write(bytes)
-          offset += bytes.length
+          for ((rel, file) <- entries) {
+            val bytes = IO.readBytes(file)
+            index(rel) = (offset, bytes.length)
+            dataStream.write(bytes)
+            offset += bytes.length
+          }
+
+          val jsonEntries = index.map { case (path, (off, size)) =>
+            s""""$path":[$off,$size]"""
+          }.mkString("{", ",", "}")
+          val indexBytes = jsonEntries.getBytes("UTF-8")
+
+          val out = new java.io.BufferedOutputStream(new java.io.FileOutputStream(outputFile))
+          try {
+            out.write((indexBytes.length >> 24) & 0xff)
+            out.write((indexBytes.length >> 16) & 0xff)
+            out.write((indexBytes.length >> 8) & 0xff)
+            out.write(indexBytes.length & 0xff)
+            out.write(indexBytes)
+            dataStream.writeTo(out)
+          } finally {
+            out.close()
+          }
+
+          s.log.info(s"Wrote ${outputFile.length()} bytes to ${outputFile.getAbsolutePath}")
+          Set(outputFile)
         }
-
-        val jsonEntries = index.map { case (path, (off, size)) =>
-          s""""$path":[$off,$size]"""
-        }.mkString("{", ",", "}")
-        val indexBytes = jsonEntries.getBytes("UTF-8")
-
-        val out = new java.io.BufferedOutputStream(new java.io.FileOutputStream(outputFile))
-        try {
-          out.write((indexBytes.length >> 24) & 0xff)
-          out.write((indexBytes.length >> 16) & 0xff)
-          out.write((indexBytes.length >> 8) & 0xff)
-          out.write(indexBytes.length & 0xff)
-          out.write(indexBytes)
-          dataStream.writeTo(out)
-        } finally {
-          out.close()
-        }
-
-        s.log.info(s"Wrote ${outputFile.length()} bytes to ${outputFile.getAbsolutePath}")
+        cached(inputs)
         outputFile
       },
       // Prepare everything bun needs to compile the standalone binary: the
