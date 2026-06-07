@@ -3,15 +3,12 @@ package repl
 
 import scala.concurrent.Future
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
-import scala.scalajs.js
 import scala.util.{Success, Failure}
-
-import dotty.tools.io.VirtualDirectory
 
 /** Scripted-test driver for the human/CLI REPL — the Scala.js analogue of dotty's
  *  `dotty.tools.repl.ScriptedTests`. Each file in `REPL_SCRIPTS_DIR` (the shared
- *  `repl/test-resources/repl` transcripts) is replayed against a freshly-reset
- *  session via [[ScriptedRepl.reproduce]] (the same path `--script` uses) and the
+ *  `repl/test-resources/repl` transcripts) is replayed through the JSON REPL
+ *  client via [[ScriptedRepl.reproduce]] (the same path `--script` uses) and the
  *  reproduced transcript is diffed against the file with `FileDiff` semantics
  *  (compare non-blank lines for exact equality).
  *
@@ -28,12 +25,12 @@ object ReplScriptedTests:
     val dir = ReplBootstrap.env("REPL_SCRIPTS_DIR").getOrElse("repl/test-resources/repl")
     val excludes = parseExcludes(ReplBootstrap.env("REPL_SCRIPTS_EXCLUDES").flatMap(ReplBootstrap.readFileOpt))
 
-    ReplBootstrap.createRunnerFromEnv() match
+    ReplBootstrap.createSessionFromEnv() match
       case None =>
         println("error: set DOTTY_CLASSPATH_BIN and DOTTY_LINKER_LIBS_BIN")
         ReplBootstrap.setExitCode(1)
-      case Some((cpDir, runner, libLoaded)) =>
-        libLoaded.flatMap(_ => runAll(cpDir, runner, dir, excludes, filter)).onComplete {
+      case Some(sessionF) =>
+        sessionF.flatMap(session => runAll(new JsonReplClient(session), dir, excludes, filter)).onComplete {
           case Success((passed, failed, skipped)) =>
             println(s"\n==== $passed passed, $failed failed, $skipped skipped (platform-inherent) ====")
             if failed > 0 then ReplBootstrap.setExitCode(1)
@@ -42,7 +39,7 @@ object ReplScriptedTests:
             ReplBootstrap.setExitCode(1)
         }
 
-  private def runAll(cpDir: VirtualDirectory, runner: InterpreterRunner, dir: String,
+  private def runAll(client: JsonReplClient, dir: String,
                      excludes: Set[String], filter: Option[String]): Future[(Int, Int, Int)] =
     val files = ReplBootstrap.listFiles(dir).filter(n => filter.forall(n.contains)).sorted
     if files.isEmpty then println(s"no scripts found in $dir")
@@ -53,56 +50,24 @@ object ReplScriptedTests:
         println(s"SKIP $name")
         Future.successful((passed, failed, skipped + 1))
       else
-        runFile(cpDir, runner, dir, name).map(ok =>
+        runFile(client, dir, name).map(ok =>
           if ok then (passed + 1, failed, skipped) else (passed, failed + 1, skipped))
     }
 
-  private def runFile(cpDir: VirtualDirectory, runner: InterpreterRunner, dir: String, name: String): Future[Boolean] =
-    // Fresh interpreter + session per transcript (the JVM runs each in isolation).
-    runner.reset().flatMap { _ =>
-      val sessionDir = new VirtualDirectory("(repl-session)", None)
-      val fileLines = ReplBootstrap.readFileLines(dir + "/" + name)
-      val buf = new StringBuilder
-      // The reproduced transcript is the REPL's stdout: the driver's rendered
-      // output (via the `emit` sink below) interleaved with the user code's own
-      // stdout. Capture the latter (which goes to process.stdout / console.log)
-      // into the same buffer, matching the bin harness's `>out 2>/dev/null`.
-      withCapturedStdout(buf) {
-        ScriptedRepl.reproduce(cpDir, sessionDir, runner, fileLines, s => { buf ++= s; () })
-      }.map { _ =>
-        val expected = nonBlank(fileLines)
-        val actual = nonBlank(buf.toString.split("\n", -1).toList)
-        if expected == actual then
-          println(s"PASS $name (${expected.size} lines)")
-          true
-        else
-          println(s"FAIL $name")
-          printDiff(expected, actual)
-          false
-      }
+  private def runFile(client: JsonReplClient, dir: String, name: String): Future[Boolean] =
+    val fileLines = ReplBootstrap.readFileLines(dir + "/" + name)
+    val buf = new StringBuilder
+    ScriptedRepl.reproduce(client, fileLines, s => { buf ++= s; () }).map { _ =>
+      val expected = nonBlank(fileLines)
+      val actual = nonBlank(buf.toString.split("\n", -1).toList)
+      if expected == actual then
+        println(s"PASS $name (${expected.size} lines)")
+        true
+      else
+        println(s"FAIL $name")
+        printDiff(expected, actual)
+        false
     }
-
-  /** Run `body` with the user code's own stdout redirected into `buf`.
-   *
-   *  A transcript's expected output interleaves the REPL's rendered output (which
-   *  we already collect via the `emit` sink) with anything the *evaluated code*
-   *  prints itself — that goes straight to `process.stdout` / `console.log` on the
-   *  real process. We monkey-patch both to append to `buf` for the duration of the
-   *  replay, then restore them (matching the bin harness's `>out 2>/dev/null`:
-   *  stdout only, stderr discarded). */
-  private def withCapturedStdout(buf: StringBuilder)(body: => Future[Unit]): Future[Unit] =
-    val process = js.Dynamic.global.process
-    val console = js.Dynamic.global.console
-    val origWrite = process.stdout.write
-    val origLog   = console.log
-    val write: js.Function1[js.Any, Boolean] = (chunk: js.Any) => { buf ++= chunk.toString; true }
-    val log: js.Function1[js.Any, Unit]      = (arg: js.Any)   => { buf ++= arg.toString; buf += '\n'; () }
-    process.stdout.write = write
-    console.log = log
-    def restore(): Unit =
-      process.stdout.write = origWrite
-      console.log = origLog
-    body.andThen { case _ => restore() }
 
   /** FileDiff semantics: keep only lines with a non-whitespace char. */
   private def nonBlank(lines: List[String]): List[String] =

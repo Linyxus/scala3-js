@@ -2,11 +2,7 @@ package dotty.tools
 package repl
 
 import scala.scalajs.js
-import scala.scalajs.js.typedarray.*
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
-
-import dotty.tools.dotc.ClasspathBlob
-import dotty.tools.io.VirtualDirectory
 
 /** JS/Node entry point for the Scala 3 REPL compiled to JavaScript.
  *
@@ -23,7 +19,7 @@ import dotty.tools.io.VirtualDirectory
 object Main:
 
   def main(args0: Array[String]): Unit =
-    if !hasProcess then return
+    if !ReplBootstrap.hasProcess then return
 
     // With `scalaJSUseMainModuleInitializer`, `main` is invoked with no args, so
     // read the real CLI args from `process.argv` (dropping `node` + script path).
@@ -33,50 +29,53 @@ object Main:
         try js.Dynamic.global.process.argv.asInstanceOf[js.Array[String]].jsSlice(2).toArray
         catch case _: Throwable => args0
 
-    val cpPath  = env("DOTTY_CLASSPATH_BIN")
-    val libPath = env("DOTTY_LINKER_LIBS_BIN")
-    (cpPath, libPath) match
-      case (Some(cp), Some(lib)) =>
-        val cpDir      = ClasspathBlob.load(readArrayBuffer(cp))
-        val sessionDir = new VirtualDirectory("(repl-session)", None)
-        val runner     = new InterpreterRunner
-
-        runner.loadLibrary(readArrayBuffer(lib)).foreach { _ =>
+    ReplBootstrap.createSessionFromEnv() match
+      case Some(sessionF) =>
+        sessionF.foreach { session =>
+          val client = new JsonReplClient(session)
           args.toList match
-            case "--script" :: file :: _ =>
-              runScript(cpDir, sessionDir, runner, file)
-            case Nil =>
-              val driver = new JSReplDriver(cpDir, sessionDir, runner)
-              interactive(driver)
-            case lines =>
-              val driver = new JSReplDriver(cpDir, sessionDir, runner)
-              runLines(driver, lines.map(l => s"$Prompt $l"), driver.initialState)
+            case "--script" :: file :: _ => runScript(client, file)
+            case Nil                     => interactive(client)
+            case lines                   => runLines(client, lines.map(l => s"$Prompt $l"))
         }
+        sessionF.failed.foreach(reportError)
       case _ =>
         Console.err.println("error: set DOTTY_CLASSPATH_BIN and DOTTY_LINKER_LIBS_BIN (use bin/scala-repl-js)")
-        setExitCode(1)
+        ReplBootstrap.setExitCode(1)
 
   private val Prompt = "scala>"
 
   /** Replay a scripted-test file: reproduce the full transcript on stdout (shared
    *  with the scripted-test driver via [[ScriptedRepl]]). */
-  private def runScript(cpDir: VirtualDirectory, sessionDir: VirtualDirectory,
-                        runner: InterpreterRunner, file: String): Unit =
-    ScriptedRepl.reproduce(cpDir, sessionDir, runner, ReplBootstrap.readFileLines(file),
-      s => { js.Dynamic.global.process.stdout.write(s); () })
+  private def runScript(client: JsonReplClient, file: String): Unit =
+    ScriptedRepl.reproduce(
+      client,
+      ReplBootstrap.readFileLines(file),
+      s => { js.Dynamic.global.process.stdout.write(s); () },
+      s => { js.Dynamic.global.process.stderr.write(s); () },
+    ).failed.foreach(reportError)
     ()
 
   /** Evaluate `scala> …` lines sequentially: echo each verbatim, then feed the
-   *  text after the prompt to the driver (which prints the rendered output). */
-  private def runLines(driver: JSReplDriver, lines: List[String], state: State): Unit =
+   *  text after the prompt to the JSON REPL client. */
+  private def runLines(client: JsonReplClient, lines: List[String]): Unit =
     lines match
       case Nil => ()
       case line :: rest =>
         println(line)
-        driver.evalLine(line.drop(Prompt.length), state).foreach(next => runLines(driver, rest, next))
+        val evalF = client.eval(line.drop(Prompt.length))
+        evalF.foreach { result =>
+          ScriptedRepl.emitResponse(
+            result,
+            s => { js.Dynamic.global.process.stdout.write(s); () },
+            s => { js.Dynamic.global.process.stderr.write(s); () },
+          )
+          runLines(client, rest)
+        }
+        evalF.failed.foreach(reportError)
 
   /** Interactive read-eval-print loop over Node's `readline`. */
-  private def interactive(driver: JSReplDriver): Unit =
+  private def interactive(client: JsonReplClient): Unit =
     val readline = js.Dynamic.global.require("readline")
     val process  = js.Dynamic.global.process
     val rl = readline.createInterface(js.Dynamic.literal(
@@ -85,7 +84,6 @@ object Main:
     println("Evaluates each line incrementally on the JS compiler + .sjsir interpreter. Type :quit to exit.")
 
     val pending = scala.collection.mutable.Queue[String]()
-    var state   = driver.initialState
     var busy    = false
     var ended   = false
 
@@ -103,8 +101,20 @@ object Main:
           case ""             => pump()
           case line =>
             busy = true
-            driver.evalLine(line, state).foreach { next =>
-              state = next; busy = false; prompt(); pump()
+            val evalF = client.eval(line)
+            evalF.foreach { result =>
+              ScriptedRepl.emitResponse(
+                result,
+                s => { process.stdout.write(s); () },
+                s => { process.stderr.write(s); () },
+              )
+              busy = false; prompt(); pump()
+            }
+            evalF.failed.foreach { e =>
+              busy = false
+              reportError(e)
+              prompt()
+              pump()
             }
       else if ended then quit()
 
@@ -112,21 +122,6 @@ object Main:
     rl.on("line", ((l: String) => { pending.enqueue(l); pump() }): js.Function1[String, Unit])
     rl.on("close", (() => { ended = true; pump() }): js.Function0[Unit])
 
-  // --- JS/Node helpers ------------------------------------------------------
-
-  private def hasProcess: Boolean =
-    try { val _ = js.Dynamic.global.process.argv; true }
-    catch { case _: Throwable => false }
-
-  private def env(name: String): Option[String] =
-    val v = js.Dynamic.global.process.env.selectDynamic(name)
-    if js.isUndefined(v) || v == null then None else Some(v.asInstanceOf[String])
-
-  private def readArrayBuffer(path: String): ArrayBuffer =
-    val fs = js.Dynamic.global.require("fs")
-    val u8 = fs.readFileSync(path).asInstanceOf[Uint8Array]
-    u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength)
-
-  private def setExitCode(code: Int): Unit =
-    try js.Dynamic.global.process.exitCode = code
-    catch case _: Throwable => ()
+  private def reportError(e: Throwable): Unit =
+    Console.err.println(Option(e.getMessage).filter(_.nonEmpty).getOrElse(e.toString))
+    ReplBootstrap.setExitCode(1)

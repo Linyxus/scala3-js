@@ -2,6 +2,7 @@ package dotty.tools
 package repl
 
 import scala.concurrent.Future
+import scala.collection.mutable.ListBuffer
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 import scala.scalajs.js
 import scala.scalajs.js.typedarray.ArrayBuffer
@@ -13,7 +14,8 @@ import dotty.tools.io.VirtualDirectory
  *  The human CLI owns its echo/prompt behavior directly. This session is the
  *  machine-facing API used by the JSONL worker: one eval updates one persistent
  *  REPL state, while REPL-rendered output and user stdout/stderr are kept in
- *  separate buffers.
+ *  separate buffers. An ordered chunk stream is also retained for in-process
+ *  front-ends that need to reproduce the human transcript exactly.
  */
 final class ReplSession private (
   cpDir: VirtualDirectory,
@@ -23,6 +25,7 @@ final class ReplSession private (
   import ReplSession.*
 
   private var currentOutput: StringBuilder | Null = null
+  private var currentChunks: ListBuffer[OutputChunk] | Null = null
   private val driver = new JSReplDriver(
     cpDir,
     sessionDir,
@@ -30,6 +33,8 @@ final class ReplSession private (
     output = s =>
       val out = currentOutput
       if out != null then out.append(s)
+      val chunks = currentChunks
+      if chunks != null then chunks += OutputChunk.ReplOutput(s)
       ()
   )
 
@@ -48,10 +53,13 @@ final class ReplSession private (
 
   def eval(code: String): Future[EvalResponse] =
     val output = new StringBuilder
+    val chunks = ListBuffer.empty[OutputChunk]
     currentOutput = output
-    captureProcessOutput(driver.evalLineResult(code, state)).map {
+    currentChunks = chunks
+    captureProcessOutput(chunks)(driver.evalLineResult(code, state)).map {
       case (result, stdout, stderr) =>
         currentOutput = null
+        currentChunks = null
         state = result.state
         if result.ok then stateVersion += 1
         EvalResponse(
@@ -61,10 +69,12 @@ final class ReplSession private (
           stderr = stderr,
           error = result.error,
           stateVersion = stateVersion,
+          chunks = chunks.toList,
         )
     }.recover {
       case e: Throwable =>
         currentOutput = null
+        currentChunks = null
         EvalResponse(
           ok = false,
           output = output.toString,
@@ -72,28 +82,33 @@ final class ReplSession private (
           stderr = "",
           error = Some(throwableMessage(e)),
           stateVersion = stateVersion,
+          chunks = chunks.toList,
         )
     }
 
-  def reset(): Future[Int] =
+  def reset(settings: List[String] = Nil): Future[Int] =
     val output = new StringBuilder
+    val chunks = ListBuffer.empty[OutputChunk]
     currentOutput = output
-    captureProcessOutput(driver.resetState()).map {
+    currentChunks = chunks
+    captureProcessOutput(chunks)(driver.resetState(settings)).map {
       case (nextState, _, _) =>
         currentOutput = null
+        currentChunks = null
         state = nextState
         stateVersion = 0
         stateVersion
     }.recover {
       case e: Throwable =>
         currentOutput = null
+        currentChunks = null
         throw e
     }
 
   def shutdown(): Future[Unit] =
     Future.successful(())
 
-  private def captureProcessOutput[A](body: => Future[A]): Future[(A, String, String)] =
+  private def captureProcessOutput[A](chunks: ListBuffer[OutputChunk])(body: => Future[A]): Future[(A, String, String)] =
     val stdout = new StringBuilder
     val stderr = new StringBuilder
 
@@ -110,24 +125,31 @@ final class ReplSession private (
 
     def install(): Unit =
       outObj.updateDynamic("write")(((chunk: js.Any) =>
-        stdout.append(chunkToString(chunk))
+        val text = chunkToString(chunk)
+        stdout.append(text)
+        chunks += OutputChunk.Stdout(text)
         true
       ): js.Function1[js.Any, Boolean])
       errObj.updateDynamic("write")(((chunk: js.Any) =>
-        stderr.append(chunkToString(chunk))
+        val text = chunkToString(chunk)
+        stderr.append(text)
+        chunks += OutputChunk.Stderr(text)
         true
       ): js.Function1[js.Any, Boolean])
       console.updateDynamic("log")(((chunk: js.Any) =>
-        stdout.append(chunkToString(chunk))
-        stdout.append("\n")
+        val text = chunkToString(chunk) + "\n"
+        stdout.append(text)
+        chunks += OutputChunk.Stdout(text)
       ): js.Function1[js.Any, Unit])
       console.updateDynamic("error")(((chunk: js.Any) =>
-        stderr.append(chunkToString(chunk))
-        stderr.append("\n")
+        val text = chunkToString(chunk) + "\n"
+        stderr.append(text)
+        chunks += OutputChunk.Stderr(text)
       ): js.Function1[js.Any, Unit])
       console.updateDynamic("warn")(((chunk: js.Any) =>
-        stderr.append(chunkToString(chunk))
-        stderr.append("\n")
+        val text = chunkToString(chunk) + "\n"
+        stderr.append(text)
+        chunks += OutputChunk.Stderr(text)
       ): js.Function1[js.Any, Unit])
 
     def restore(): Unit =
@@ -160,6 +182,14 @@ final class ReplSession private (
       catch case _: Throwable => chunk.toString
 
 object ReplSession:
+  sealed trait OutputChunk:
+    def text: String
+
+  object OutputChunk:
+    final case class ReplOutput(text: String) extends OutputChunk
+    final case class Stdout(text: String) extends OutputChunk
+    final case class Stderr(text: String) extends OutputChunk
+
   final case class EvalResponse(
     ok: Boolean,
     output: String,
@@ -167,6 +197,7 @@ object ReplSession:
     stderr: String,
     error: Option[String],
     stateVersion: Int,
+    chunks: List[OutputChunk] = Nil,
   )
 
   def create(cpDir: VirtualDirectory, linkerLibs: ArrayBuffer): Future[ReplSession] =

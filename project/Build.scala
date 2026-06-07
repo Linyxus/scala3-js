@@ -2646,48 +2646,6 @@ object Build {
       scalaJSLinkerConfig ~= { _.withESFeatures(_.withESVersion(ESVersion.ES2018)) },
     )
 
-  /** Existing readline/script/argument REPL entrypoint. */
-  lazy val `scala3-repl-cli-sjs` = project.in(file("repl-js-cli"))
-    .dependsOn(`scala3-repl-sjs`)
-    .enablePlugins(DottyJSPlugin)
-    .settings(
-      name          := "scala3-repl-cli-sjs",
-      moduleName    := "scala3-repl-cli",
-      version       := dottyVersion,
-      scalaVersion  := dottyNonBootstrappedVersion,
-      crossPaths    := true,
-      autoScalaLibrary := false,
-      bootstrappedScalaInstanceSettings,
-      Compile / unmanagedSourceDirectories := Seq(baseDirectory.value / "src"),
-      libraryDependencies +=
-        ("org.scala-js" %% "scalajs-library" % scalaJSVersion % Provided).cross(CrossVersion.for3Use2_13),
-      target := target.value / "scala3-repl-cli-sjs",
-      publish / skip := true,
-      bspEnabled := false,
-      scalaJSUseMainModuleInitializer := true,
-      Compile / mainClass := Some("dotty.tools.repl.Main"),
-      scalaJSLinkerConfig ~= { _.withESFeatures(_.withESVersion(ESVersion.ES2018)) },
-
-      // Scripted REPL transcript tests (the dotty `ScriptedTests` analogue):
-      // `dotty.tools.repl.ReplScriptedTests` replays `repl/test-resources/repl/*`
-      // in-process via ScriptedRepl and diffs the reproduced transcript.
-      // `sbt scala3-repl-cli-sjs/test`; a name substring as arg runs a subset.
-      Test / unmanagedSourceDirectories := Seq(baseDirectory.value / "test"),
-      Test / scalaJSUseMainModuleInitializer := true,
-      Test / scalaJSUseTestModuleInitializer := false,
-      Test / mainClass := Some("dotty.tools.repl.ReplScriptedTests"),
-      Test / test := runScriptedTests(
-        (`scala3-compiler-cli-sjs` / packClasspath).value,
-        (`scala3-compiler-cli-sjs` / packLinkerLibs).value,
-        { val _ = (Test / fastLinkJS).value
-          (Test / fastLinkJS / scalaJSLinkerOutputDirectory).value / "main.js" },
-        Seq(
-          "REPL_SCRIPTS_DIR"      -> ((LocalRootProject / baseDirectory).value / "repl" / "test-resources" / "repl").getAbsolutePath,
-          "REPL_SCRIPTS_EXCLUDES" -> ((LocalRootProject / baseDirectory).value / "repl-js" / "test" / "scripted-excludes.txt").getAbsolutePath,
-        ),
-        Nil, baseDirectory.value, failOnError = true, streams.value.log),
-    )
-
   /** Sequential JSONL stdio REPL worker entrypoint. */
   lazy val `scala3-repl-json-sjs` = project.in(file("repl-js-json"))
     .dependsOn(`scala3-repl-sjs`)
@@ -2736,6 +2694,53 @@ object Build {
           (Test / fastLinkJS / scalaJSLinkerOutputDirectory).value / "main.js" },
         Seq("EVAL_SCRIPTS_DIR" -> ((LocalRootProject / baseDirectory).value / "repl-js" / "test-resources" / "eval").getAbsolutePath),
         Seq("--update"), baseDirectory.value, failOnError = false, streams.value.log),
+    )
+
+  /** Existing readline/script/argument REPL entrypoint.
+   *
+   *  This is a human-facing wrapper over `scala3-repl-json-sjs`: it owns prompt,
+   *  echo, and stdout/stderr rendering, while evaluation flows through the same
+   *  JSON protocol client used by the worker.
+   */
+  lazy val `scala3-repl-cli-sjs` = project.in(file("repl-js-cli"))
+    .dependsOn(`scala3-repl-json-sjs`)
+    .enablePlugins(DottyJSPlugin)
+    .settings(
+      name          := "scala3-repl-cli-sjs",
+      moduleName    := "scala3-repl-cli",
+      version       := dottyVersion,
+      scalaVersion  := dottyNonBootstrappedVersion,
+      crossPaths    := true,
+      autoScalaLibrary := false,
+      bootstrappedScalaInstanceSettings,
+      Compile / unmanagedSourceDirectories := Seq(baseDirectory.value / "src"),
+      libraryDependencies +=
+        ("org.scala-js" %% "scalajs-library" % scalaJSVersion % Provided).cross(CrossVersion.for3Use2_13),
+      target := target.value / "scala3-repl-cli-sjs",
+      publish / skip := true,
+      bspEnabled := false,
+      scalaJSUseMainModuleInitializer := true,
+      Compile / mainClass := Some("dotty.tools.repl.Main"),
+      scalaJSLinkerConfig ~= { _.withESFeatures(_.withESVersion(ESVersion.ES2018)) },
+
+      // Scripted REPL transcript tests (the dotty `ScriptedTests` analogue):
+      // `dotty.tools.repl.ReplScriptedTests` replays `repl/test-resources/repl/*`
+      // through the JSON REPL client and diffs the reproduced transcript.
+      // `sbt scala3-repl-cli-sjs/test`; a name substring as arg runs a subset.
+      Test / unmanagedSourceDirectories := Seq(baseDirectory.value / "test"),
+      Test / scalaJSUseMainModuleInitializer := true,
+      Test / scalaJSUseTestModuleInitializer := false,
+      Test / mainClass := Some("dotty.tools.repl.ReplScriptedTests"),
+      Test / test := runScriptedTests(
+        (`scala3-compiler-cli-sjs` / packClasspath).value,
+        (`scala3-compiler-cli-sjs` / packLinkerLibs).value,
+        { val _ = (Test / fastLinkJS).value
+          (Test / fastLinkJS / scalaJSLinkerOutputDirectory).value / "main.js" },
+        Seq(
+          "REPL_SCRIPTS_DIR"      -> ((LocalRootProject / baseDirectory).value / "repl" / "test-resources" / "repl").getAbsolutePath,
+          "REPL_SCRIPTS_EXCLUDES" -> ((LocalRootProject / baseDirectory).value / "repl-js" / "test" / "scripted-excludes.txt").getAbsolutePath,
+        ),
+        Nil, baseDirectory.value, failOnError = true, streams.value.log),
     )
 
   lazy val `scala3-presentation-compiler` = project.in(file("presentation-compiler"))

@@ -14,26 +14,49 @@ import scala.scalajs.js
  *  decide what to do with it (write to stdout, or compare against a checkfile).
  */
 object JsonProtocol:
+  final case class Response(
+    json: String,
+    shouldStop: Boolean,
+    eval: Option[ReplSession.EvalResponse] = None,
+  )
+
+  def evalRequest(code: String): String =
+    stringify(js.Dynamic.literal(op = "eval", code = code))
+
+  def resetRequest(settings: List[String] = Nil): String =
+    val request = js.Dynamic.literal(op = "reset")
+    if settings.nonEmpty then request.updateDynamic("settings")(js.Array(settings*))
+    stringify(request)
+
+  def shutdownRequest(): String =
+    stringify(js.Dynamic.literal(op = "shutdown"))
 
   /** Handle one request `line` against `session`. Returns the response JSON
    *  string and whether the worker should stop (a `shutdown` request). */
   def respond(session: ReplSession, line: String): Future[(String, Boolean)] =
+    respondDetailed(session, line).map(r => (r.json, r.shouldStop))
+
+  /** Like [[respond]], but keeps the typed eval result for in-process clients
+   *  that need data not represented on the JSON wire, such as output ordering. */
+  def respondDetailed(session: ReplSession, line: String): Future[Response] =
     parseJson(line) match
-      case Left(error) => Future.successful((protocolError(error), false))
+      case Left(error) => Future.successful(Response(protocolError(error), false))
       case Right(req) =>
         stringField(req, "op") match
           case Some("eval") =>
             stringField(req, "code") match
-              case Some(code) => session.eval(code).map(r => (evalResponse(r), false))
-              case None       => Future.successful((protocolError("eval.code must be a string"), false))
+              case Some(code) => session.eval(code).map(r => Response(evalResponse(r), false, Some(r)))
+              case None       => Future.successful(Response(protocolError("eval.code must be a string"), false))
           case Some("reset") =>
-            session.reset().map(v => (resetResponse(v), false))
+            stringArrayField(req, "settings") match
+              case Some(settings) => session.reset(settings).map(v => Response(resetResponse(v), false))
+              case None           => Future.successful(Response(protocolError("reset.settings must be an array of strings"), false))
           case Some("shutdown") =>
-            session.shutdown().map(_ => (shutdownResponse(session.version), true))
+            session.shutdown().map(_ => Response(shutdownResponse(session.version), true))
           case Some(_) =>
-            Future.successful((protocolError("unknown op"), false))
+            Future.successful(Response(protocolError("unknown op"), false))
           case None =>
-            Future.successful((protocolError("op must be a string"), false))
+            Future.successful(Response(protocolError("op must be a string"), false))
 
   // --- response builders (single source of truth for the wire format) --------
 
@@ -70,3 +93,18 @@ object JsonProtocol:
     val value = obj.selectDynamic(name)
     if js.isUndefined(value) || value == null || js.typeOf(value) != "string" then None
     else Some(value.asInstanceOf[String])
+
+  private def stringArrayField(obj: js.Dynamic, name: String): Option[List[String]] =
+    val value = obj.selectDynamic(name)
+    if js.isUndefined(value) || value == null then Some(Nil)
+    else if !js.Array.isArray(value) then None
+    else
+      val arr = value.asInstanceOf[js.Array[js.Any]]
+      val out = List.newBuilder[String]
+      var i = 0
+      while i < arr.length do
+        val elem = arr(i)
+        if elem == null || js.isUndefined(elem) || js.typeOf(elem) != "string" then return None
+        out += elem.asInstanceOf[String]
+        i += 1
+      Some(out.result())
