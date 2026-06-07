@@ -65,3 +65,5 @@ object ScriptedRepl:
       emit(result.stdout)
       emitErr(result.stderr)
       emit(result.output)
+    if !result.ok && result.output.isEmpty then
+      result.error.foreach(error => emit(error + "\n"))

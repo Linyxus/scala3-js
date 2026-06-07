@@ -30,7 +30,16 @@ object ReplScriptedTests:
         println("error: set DOTTY_CLASSPATH_BIN and DOTTY_LINKER_LIBS_BIN")
         ReplBootstrap.setExitCode(1)
       case Some(sessionF) =>
-        sessionF.flatMap(session => runAll(new JsonReplClient(session), dir, excludes, filter)).onComplete {
+        sessionF.flatMap { session =>
+          val client = new JsonReplClient(session)
+          runAll(client, dir, excludes, filter).flatMap {
+            case (passed, failed, skipped) =>
+              runEvalErrorSmoke(client).map { ok =>
+                if ok then (passed + 1, failed, skipped)
+                else (passed, failed + 1, skipped)
+              }
+          }
+        }.onComplete {
           case Success((passed, failed, skipped)) =>
             println(s"\n==== $passed passed, $failed failed, $skipped skipped (platform-inherent) ====")
             if failed > 0 then ReplBootstrap.setExitCode(1)
@@ -66,6 +75,20 @@ object ReplScriptedTests:
       else
         println(s"FAIL $name")
         printDiff(expected, actual)
+        false
+    }
+
+  private def runEvalErrorSmoke(client: JsonReplClient): Future[Boolean] =
+    val buf = new StringBuilder
+    ScriptedRepl.reproduce(client, List("""scala> eval("abc")"""), s => { buf ++= s; () }).map { _ =>
+      val actual = buf.toString
+      val ok = actual.contains("scala.runtime.eval.EvalCompileException") && actual.contains("Not found: abc")
+      if ok then
+        println("PASS eval-error-smoke")
+        true
+      else
+        println("FAIL eval-error-smoke")
+        println(actual)
         false
     }
 
