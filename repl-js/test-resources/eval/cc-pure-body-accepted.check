@@ -1,0 +1,15 @@
+# cc 4: same shape as cc 3 but the body only captures the pure Int param -> accepted.
+>>> {"op":"eval","code":"import language.experimental.captureChecking"}
+~ "ok":true
+>>> {"op":"eval","code":"import caps.*"}
+~ "ok":true
+>>> {"op":"eval","code":"trait C[T] { def map[U](op: T -> U): C[U] = ??? }"}
+~ "ok":true
+>>> {"op":"eval","code":"class IO extends SharedCapability"}
+~ "ok":true
+>>> {"op":"eval","code":"class CImpl extends C[Int] { override def map[U](op: Int -> U): C[U] = new CImpl().asInstanceOf[C[U]] }"}
+~ "ok":true
+>>> {"op":"eval","code":"def g(i: Int, io: IO^, c: C[Int]) = eval[Any](\"c.map(x => i)\")"}
+~ "ok":true
+>>> {"op":"eval","code":"g(1, new IO, new CImpl)"}
+~ "ok":true

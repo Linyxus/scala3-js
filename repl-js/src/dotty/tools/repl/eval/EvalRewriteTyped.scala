@@ -16,6 +16,7 @@ import dotc.core.Phases.Phase
 import dotc.core.StdNames.nme
 import dotc.core.Symbols.*
 import dotc.core.Types.*
+import dotc.config.Feature
 import dotc.report
 import dotc.transform.MacroTransform
 import dotc.util.SourceFile
@@ -480,8 +481,22 @@ class EvalRewriteTyped(maybeConfig: Option[EvalCompilerConfig] = None) extends M
             .appliedTo(nameLit, readRef(c, span))
             .withSpan(span)
 
-    /** Capture-checking integration is deferred (task #10); identity for now. */
-    private def discardUses(bindApp: Tree)(using Context): Tree = bindApp
+    /** Suppress capture-set propagation from the synthesised `Eval.bind(name, v)`
+     *  calls into the enclosing scope. Each captured local's value carries its
+     *  own capture set; without this, the use recorded by `Eval.bind` flows into
+     *  every enclosing function literal — including ones whose expected capture
+     *  set forbids it (e.g. `String ->{any.rd} Int`), producing spurious cc
+     *  errors at the outer compile. The binding only travels to the inner
+     *  verification compile, which re-checks the body in its own lexical scope
+     *  where the capability is legal.
+     *
+     *  Done by wrapping the bind in `caps.unsafe.unsafeDiscardUses(...)`, which
+     *  `CheckCaptures` rechecks `withDiscardedUses`. Only under cc; a no-op
+     *  otherwise. (Safe mode rejects `unsafeDiscardUses` — handled separately.) */
+    private def discardUses(bindApp: Tree)(using Context): Tree =
+      if Feature.ccEnabled && defn.Caps_unsafeDiscardUses.exists then
+        ref(defn.Caps_unsafeDiscardUses).appliedTo(bindApp)
+      else bindApp
 
     private def readRef(c: CapturedSym, span: Span)(using Context): Tree =
       c.selfThisCls match

@@ -65,11 +65,14 @@ object EvalScriptedTests:
         JsonProtocol.respond(session, turn.request).map(r => acc :+ (turn, r._1))
       }.map { results =>
         if update then
-          writeFile(path, render(results.map((t, actual) => t.copy(expected = actual))))
+          // Regenerate exact expectations; preserve hand-authored `~` regex
+          // matchers (used for fuzzy diagnostics, mirroring the JVM suite).
+          writeFile(path, render(results.map((t, actual) =>
+            if isRegex(t.expected) then t else t.copy(expected = actual))))
           println(s"UPDATE $name (${results.size} turns)")
           true
         else
-          val mismatches = results.filter((t, actual) => t.expected != actual)
+          val mismatches = results.filterNot((t, actual) => matches(t.expected, actual))
           if mismatches.isEmpty then
             println(s"PASS $name (${results.size} turns)")
             true
@@ -83,6 +86,16 @@ object EvalScriptedTests:
             false
       }
     }
+
+  /** An expected line `~ <regex>` is a (Scala) regex the response must contain;
+   *  anything else is matched verbatim. Regex matchers express the fuzzy
+   *  diagnostics (cc / safe-mode) the way the JVM suite uses `assertContains`. */
+  private def isRegex(expected: String): Boolean = expected.startsWith("~ ")
+  private def matches(expected: String, actual: String): Boolean =
+    if isRegex(expected) then
+      try expected.stripPrefix("~ ").r.findFirstIn(actual).isDefined
+      catch case _: Throwable => false // a malformed pattern is a test failure, not a crash
+    else expected == actual
 
   // --- transcript format -----------------------------------------------------
 

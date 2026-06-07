@@ -1,0 +1,16 @@
+# cc 5: the violation lives only in the inner nested eval; chained enclosingSource
+# must carry the full context (def + outer body + inner body) to the verify compile.
+>>> {"op":"eval","code":"import language.experimental.captureChecking"}
+~ "ok":true
+>>> {"op":"eval","code":"import caps.*"}
+~ "ok":true
+>>> {"op":"eval","code":"trait C[T] { def map[U](op: T -> U): C[U] = ??? }"}
+~ "ok":true
+>>> {"op":"eval","code":"class IO extends SharedCapability"}
+~ "ok":true
+>>> {"op":"eval","code":"class CImpl extends C[Int]"}
+~ "ok":true
+>>> {"op":"eval","code":"def f(i: Int, io: IO^, c: C[Int]): Any = eval[Any](\"eval[Any](\\\"c.map(x => io.toString)\\\")\")"}
+~ "ok":true
+>>> {"op":"eval","code":"f(1, new IO, new CImpl)"}
+~ "ok":false.*(->\{|cannot flow into capture set|not included in the allowed capture set|CaptureChecking|capability|cannot be referenced)

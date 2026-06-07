@@ -1,0 +1,8 @@
+# cc 6: eval[AnyRef]("c") where c: AnyRef^ — the result type strips ^, so the
+# verify recompile of `def leak(c: AnyRef^): AnyRef = c` rejects the leak.
+>>> {"op":"eval","code":"import language.experimental.captureChecking"}
+~ "ok":true
+>>> {"op":"eval","code":"def leak(c: AnyRef^): AnyRef = eval[AnyRef](\"c\")"}
+~ "ok":true
+>>> {"op":"eval","code":"leak(new Object)"}
+~ "ok":false.*(->\{|cannot flow into capture set|not included in the allowed capture set|CaptureChecking|capability|cannot be referenced)
