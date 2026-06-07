@@ -1,0 +1,13 @@
+# DynamicEvalSafeModeTests: mutableVarWriteInPureLambdaInBodyRejected. Companion
+# of safe-var-pure-fn-rejected: here the pure (`->`) lambda *writes* to the
+# captured var instead of reading it. The no-capture var facade carries neither
+# the read nor the write effect, so it cannot flow into a `() -> Unit`. Rejected
+# at the `def f` compile.
+>>> {"op":"eval","code":"import language.experimental.safe"}
+~ "ok":true
+
+>>> {"op":"eval","code":"def f(): Unit = { var r: Int = 0; eval[Unit](\"val pure: () -> Unit = () => { r = r + 1 }; pure()\") }"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val out: Unit = f()"}
+~ "ok":false.*(cannot flow into capture set|not included in the allowed capture set|capture)

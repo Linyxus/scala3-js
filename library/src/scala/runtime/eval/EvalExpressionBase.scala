@@ -1,5 +1,9 @@
 package scala.runtime.eval
 
+// `experimental.captureChecking` is required for the `@caps.assumeSafe`
+// annotation below (it is `@experimental`, exempted under the cc import).
+import scala.language.experimental.captureChecking
+
 /** Pre-compiled base class for the synthesised `__EvalExpression_…` classes.
  *
  *  The eval driver compiles a synthesised `__EvalExpression_<uuid>` for each call
@@ -14,7 +18,13 @@ package scala.runtime.eval
  *  `java.lang.reflect`, are stubbed here pending an interpreter-native
  *  implementation — the foundation only lowers strategies that route through the
  *  bindings array, so these are never reached yet.
+ *
+ *  Tagged `@caps.assumeSafe` so the synthesised wrappers — compiled under the
+ *  live session's flags, which include `experimental.safe` for a safe-mode
+ *  session — can extend this base and inherit its helpers without safe-mode
+ *  rejection. (The user's body in `evaluate()` is still safe-checked.)
  */
+@caps.assumeSafe
 abstract class EvalExpressionBase(bindings: Array[Eval.Binding]):
 
   /** The synthesised subclass implements this with the user's body. Left

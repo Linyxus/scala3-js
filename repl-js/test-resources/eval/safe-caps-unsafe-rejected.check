@@ -1,0 +1,7 @@
+# DynamicEvalSafeModeTests: capsUnsafeRefInBodyRejected. Anything in
+# `caps.unsafe` is `@rejectSafe` and unreachable from a safe-mode compile.
+>>> {"op":"eval","code":"import language.experimental.safe"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val r = eval[Any](\"caps.unsafe.unsafeErasedValue[String]\")"}
+~ "ok":false.*(caps.unsafe|unavailable in safe mode|rejectSafe|safe)

@@ -16,7 +16,7 @@ import dotc.core.Phases.Phase
 import dotc.core.StdNames.nme
 import dotc.core.Symbols.*
 import dotc.core.Types.*
-import dotc.config.Feature
+import dotc.cc.CheckCaptures
 import dotc.report
 import dotc.transform.MacroTransform
 import dotc.util.SourceFile
@@ -490,13 +490,15 @@ class EvalRewriteTyped(maybeConfig: Option[EvalCompilerConfig] = None) extends M
      *  verification compile, which re-checks the body in its own lexical scope
      *  where the capability is legal.
      *
-     *  Done by wrapping the bind in `caps.unsafe.unsafeDiscardUses(...)`, which
-     *  `CheckCaptures` rechecks `withDiscardedUses`. Only under cc; a no-op
-     *  otherwise. (Safe mode rejects `unsafeDiscardUses` — handled separately.) */
+     *  Done by stamping the `Eval.bind*` Apply with [[CheckCaptures.DiscardUses]],
+     *  which `CheckCaptures` rechecks `withDiscardedUses`. We use the attachment
+     *  rather than emitting `caps.unsafe.unsafeDiscardUses(...)` because the
+     *  latter is `@rejectSafe` and would fail `SafeRefs.checkSafe` when the live
+     *  REPL session runs in safe mode. No runtime call is introduced — the marker
+     *  rides on the `Eval.bind*` Apply we already emit, and is inert when cc is
+     *  off (the capture-check phase never runs). */
     private def discardUses(bindApp: Tree)(using Context): Tree =
-      if Feature.ccEnabled && defn.Caps_unsafeDiscardUses.exists then
-        ref(defn.Caps_unsafeDiscardUses).appliedTo(bindApp)
-      else bindApp
+      bindApp.withAttachment(CheckCaptures.DiscardUses, ())
 
     private def readRef(c: CapturedSym, span: Span)(using Context): Tree =
       c.selfThisCls match
@@ -581,8 +583,12 @@ class EvalRewriteTyped(maybeConfig: Option[EvalCompilerConfig] = None) extends M
     private def buildBindVar(c: CapturedSym, span: Span)(using Context): Tree =
       val varSym = c.sym
       val elemTpe = varSym.info.widen
-      val getterTpe = defn.FunctionOf(Nil, elemTpe)
-      val setterTpe = defn.FunctionOf(List(elemTpe), defn.UnitType)
+      // SAM-typed `Supplier[T]` / `Consumer[T]` (not `Function0`/`Function1`):
+      // these nominal SAMs have an empty capture set, so a captured var's
+      // read/write effect cannot flow through the facade. Under safe mode that
+      // makes capturing a var into a *pure* function in the body a compile error.
+      val supplierTpe = EvalRewriteTyped.supplierClass.typeRef.appliedTo(elemTpe)
+      val consumerTpe = EvalRewriteTyped.consumerClass.typeRef.appliedTo(elemTpe)
 
       val getMethTpe = MethodType(Nil, elemTpe)
       val getMeth = newAnonFun(ctx.owner, getMethTpe, coord = span)
@@ -590,7 +596,7 @@ class EvalRewriteTyped(maybeConfig: Option[EvalCompilerConfig] = None) extends M
         Closure(
           getMeth,
           _ => ref(varSym).withSpan(span).changeOwner(ctx.owner, getMeth),
-          targetType = getterTpe
+          targetType = supplierTpe
         ).withSpan(span)
 
       val setMethTpe = MethodType(List(termName("v")))(_ => List(elemTpe), _ => defn.UnitType)
@@ -602,7 +608,7 @@ class EvalRewriteTyped(maybeConfig: Option[EvalCompilerConfig] = None) extends M
             Assign(ref(varSym), ref(paramss.head.head.symbol))
               .withSpan(span)
               .changeOwner(ctx.owner, setMeth),
-          targetType = setterTpe
+          targetType = consumerTpe
         ).withSpan(span)
 
       val varRef = ref(EvalRewriteTyped.varRefSym)
@@ -654,6 +660,12 @@ object EvalRewriteTyped:
 
   private def varRefSym(using Context): Symbol =
     requiredModule("scala.runtime.eval.Eval").requiredMethod("varRef")
+
+  private def supplierClass(using Context): ClassSymbol =
+    requiredClass("java.util.function.Supplier")
+
+  private def consumerClass(using Context): ClassSymbol =
+    requiredClass("java.util.function.Consumer")
 
   /** Render `tpe` as a Scala source string for the wrapper's
    *  `val __evalResult: <tpe> = ...` annotation. Returns "" when degenerate

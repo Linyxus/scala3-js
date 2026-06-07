@@ -1,5 +1,10 @@
 package scala.runtime.eval
 
+// Enables the `@caps.assumeSafe` annotation on `object Eval` below: that
+// annotation is `@experimental`, but the cc-experimental exception lets it be
+// used in any unit that imports `experimental.captureChecking`.
+import scala.language.experimental.captureChecking
+
 /** Runtime `eval` for the Scala.js dotty REPL.
  *
  *  `Eval.eval(code)` compiles and runs `code` at runtime against the live REPL
@@ -21,7 +26,14 @@ package scala.runtime.eval
  *  are bundled into both the compile classpath (`classpath.bin`) and the
  *  interpreter's loaded library (`linker-libs.bin`), making them referenceable
  *  from user code and from the synthesised `__EvalExpression` wrappers.
+ *
+ *  Tagged `@caps.assumeSafe` so safe-mode user code can call `eval`, `evalSafe`,
+ *  `bind`, `varRef`, etc. The driver re-compiles the user's body string under
+ *  the live session's flags, so a safe-mode session still applies safe-mode
+ *  checks to the body itself: this annotation only exempts the eval driver's own
+ *  surface API from safe-mode rejection, not the bodies it compiles.
  */
+@caps.assumeSafe
 object Eval:
 
   /** A captured binding.
@@ -52,13 +64,26 @@ object Eval:
     def get(): T
     def set(v: T): Unit
 
-  /** Helper used by the rewriter so the bind-site call stays terse. Unlike the
-   *  JVM port this uses plain `scala.Function0`/`Function1` — there is no
-   *  classloader boundary in the interpreter, so no `LinkageError` to avoid. */
-  def varRef[T](getter: () => T, setter: T => Unit): VarRef[T] =
+  /** Helper used by the rewriter so the bind-site call `varRef(() => x, v => x = v)`
+   *  stays terse. The parameter types are the JDK functional interfaces
+   *  (`Supplier`/`Consumer`) rather than `scala.Function0`/`Function1` for a
+   *  capture-checking reason: a `Supplier[T]` / `Consumer[T]` is a nominal SAM
+   *  with an empty capture set, so the read/write effect of a captured `var`
+   *  cannot flow through this facade. Under safe mode (which forbids the
+   *  escape hatches) that makes capturing a mutable var into a *pure* function
+   *  in the eval body a compile error — the intended behaviour — while a plain
+   *  `() => T` would silently carry the effect. Scala 3 SAM conversion accepts a
+   *  `() => x` literal where a `Supplier[T]` is expected and `v => x = v` where a
+   *  `Consumer[T]` is expected. */
+  def varRef[T](
+      get: java.util.function.Supplier[T],
+      set: java.util.function.Consumer[T]
+  ): VarRef[T] =
+    val getFn = get
+    val setFn = set
     new VarRef[T]:
-      def get(): T = getter()
-      def set(v: T): Unit = setter(v)
+      def get(): T = getFn.get()
+      def set(v: T): Unit = setFn.accept(v)
 
   /** Capture an immutable binding. */
   def bind(name: String, value: Any): Binding =

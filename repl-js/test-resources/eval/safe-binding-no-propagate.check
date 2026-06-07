@@ -1,0 +1,31 @@
+# DynamicEvalSafeModeTests: evalBindingDoesNotPropagateCapturesUnderSafeMode.
+# The same discardUses scenario as cc-binding-no-propagate, but under safe mode.
+# This additionally exercises the safe-mode constraint: the rewriter cannot
+# synthesise a call to `caps.unsafe.unsafeDiscardUses` (it is `@rejectSafe` and
+# would fail SafeRefs.checkSafe). The fix stamps the synthesised `Eval.bind(...)`
+# call with a `CheckCaptures.DiscardUses` attachment, so the cc check applies
+# discard semantics without referencing any rejected symbol. The call must
+# compile with no capture-checking error and no safe-mode rejection.
+>>> {"op":"eval","code":"import language.experimental.safe"}
+~ "ok":true
+
+>>> {"op":"eval","code":"import caps.*"}
+~ "ok":true
+
+>>> {"op":"eval","code":"trait IOCap extends SharedCapability"}
+~ "ok":true
+
+>>> {"op":"eval","code":"trait Classified[T] { def map[U](f: T ->{any.rd} U): Classified[U] }"}
+~ "ok":true
+
+>>> {"op":"eval","code":"def useIO[T](body: IOCap ?=> T): T = body(using new IOCap {})"}
+~ "ok":true
+
+>>> {"op":"eval","code":"def specialRef(using io: IOCap): AnyRef^{io} = new AnyRef"}
+~ "ok":true
+
+>>> {"op":"eval","code":"def classify[T](x: T): Classified[T] = new Classified[T] { def map[U](f: T ->{any.rd} U): Classified[U] = classify(f(x)) }"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val r: Classified[Int] = useIO { val f = specialRef; val ss = classify(\"hello\"); ss.map(s => eval[Int](\"s.length\")) }"}
+~ "ok":true.*Classified\[Int\]

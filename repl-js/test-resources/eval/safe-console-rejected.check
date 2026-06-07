@@ -1,0 +1,8 @@
+# DynamicEvalSafeModeTests: consoleInBodyRejected. `scala.Console` is
+# `@rejectSafe`; its members are unreachable from a safe-mode compile, including
+# the eval driver's wrapper.
+>>> {"op":"eval","code":"import language.experimental.safe"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val r = eval[Unit](\"scala.Console.out.print(\\\"hi\\\")\")"}
+~ "ok":false.*(Console|rejectSafe|safe)

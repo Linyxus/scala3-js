@@ -1,0 +1,15 @@
+# Headline safe-mode eval test (DynamicEvalSafeModeTests:
+# mutableVarCapturedByPureFunctionInBodyRejected). The body declares a pure
+# `() -> Int` whose closure reads the enclosing `var r`. The var-binding facade
+# the rewriter synthesises has no capture set, so the var's read effect cannot
+# flow into the pure function's empty capture set. Rejected at the REPL compile
+# of `def f`, before eval ever runs. In safe mode you cannot capture a mutable
+# var into eval through a pure function.
+>>> {"op":"eval","code":"import language.experimental.safe"}
+~ "ok":true
+
+>>> {"op":"eval","code":"def f(): Int = { var r: Int = 0; eval[Int](\"val pure: () -> Int = () => r; pure()\") }"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val out: Int = f()"}
+~ "ok":false.*(cannot flow into capture set|not included in the allowed capture set|capture)

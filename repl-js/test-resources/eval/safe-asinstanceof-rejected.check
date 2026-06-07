@@ -1,0 +1,8 @@
+# DynamicEvalSafeModeTests: asInstanceOfInBodyRejected. `asInstanceOf` is an
+# unchecked cast — a canonical safe-mode rejection. The body is spliced into the
+# wrapper and type-checked under safe mode, so the eval compile fails.
+>>> {"op":"eval","code":"import language.experimental.safe"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val r = eval[String](\"(1: Any).asInstanceOf[String]\")"}
+~ "ok":false.*(asInstanceOf|rejectSafe|safe)

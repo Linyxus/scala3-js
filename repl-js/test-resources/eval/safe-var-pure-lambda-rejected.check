@@ -1,0 +1,22 @@
+# DynamicEvalSafeModeTests: mutableVarCapturedByPureLambdaInsideEvalRejected.
+# The eval body `c.map(x => x + r)` is innocuous on its own, but `map` expects a
+# pure `Int -> Int` and `r` is a captured `var`, so the rewriter synthesises a
+# no-capture var facade and the var's read effect cannot flow into the pure
+# function position. Rejected at the `def f` compile.
+>>> {"op":"eval","code":"import language.experimental.safe"}
+~ "ok":true
+
+>>> {"op":"eval","code":"import caps.*"}
+~ "ok":true
+
+>>> {"op":"eval","code":"trait C[T] { def map[U](op: T -> U): C[U] = ??? }"}
+~ "ok":true
+
+>>> {"op":"eval","code":"class CImpl extends C[Int]"}
+~ "ok":true
+
+>>> {"op":"eval","code":"def f(c: C[Int]): Any = { var r: Int = 1; eval[Any](\"c.map(x => x + r)\") }"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val out = f(new CImpl)"}
+~ "ok":false.*(cannot flow into capture set|not included in the allowed capture set|capture)

@@ -1,0 +1,15 @@
+# Safe mode (`import language.experimental.safe`) implies capture checking and
+# additionally forbids the unsafe escape hatches. Bodies that respect the safe
+# subset still compile and run. (Ports DynamicEvalSafeModeTests:
+# basicEvalInSafeMode, pureStdlibBodyInSafeMode, pureFunctionTypeAvailableUnderSafeMode.)
+>>> {"op":"eval","code":"import language.experimental.safe"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val r: Int = eval[Int](\"1 + 2\")"}
+~ "ok":true.*val r: Int = 3
+
+>>> {"op":"eval","code":"val rs: Int = eval[Int](\"List(1, 2, 3).sum\")"}
+~ "ok":true.*val rs: Int = 6
+
+>>> {"op":"eval","code":"val rf: Int = eval[Int](\"val f: Int -> Int = (n: Int) => n + 1; f(41)\")"}
+~ "ok":true.*val rf: Int = 42

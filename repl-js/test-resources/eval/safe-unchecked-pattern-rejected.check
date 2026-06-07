@@ -1,0 +1,7 @@
+# DynamicEvalSafeModeTests: uncheckedPatternInBodyRejected. A pattern annotated
+# `@unchecked` forgets type/capture information — exactly what safe mode forbids.
+>>> {"op":"eval","code":"import language.experimental.safe"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val r = eval[Int](\"(List(1): Any) match { case xs: List[Int @unchecked] => xs.head; case _ => 0 }\")"}
+~ "ok":false.*(unchecked|rejectSafe|safe)

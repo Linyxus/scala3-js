@@ -17,7 +17,6 @@ i15493: value-class display (NInt@hash) + Float `F` suffix rely on JVM boxing id
 i1369: Scala.js stdout buffers print() with no trailing newline, so output ordering differs
 i9227: the Scala.js backend correctly adds an extra "Macro splicing is not supported on Scala.js" error
 i10355: quotes crash the JS compiler's pickleQuotes phase
-safe-in-cc: capture-checking `safe` mode rejects the REPL's own injected js.Dynamic value-bridge calls
 
 # --- Need full pprint layout / impractical under the interpreter ---
 settings-repl-max-print-elements: needs pprint's multi-line layout (we render single-line)

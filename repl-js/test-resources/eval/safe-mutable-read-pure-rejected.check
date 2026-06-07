@@ -1,0 +1,18 @@
+# DynamicEvalSafeModeTests: mutableInstanceReadInPureLambdaInBodyRejected.
+# Read-only access through a pure (`->`) lambda is also rejected: reading `b.x`
+# carries the `b.rd` effect, which cannot flow into the empty capture set
+# required by `() -> Int`. The body's `pure` declaration is ill-typed.
+>>> {"op":"eval","code":"import language.experimental.safe"}
+~ "ok":true
+
+>>> {"op":"eval","code":"import caps.*"}
+~ "ok":true
+
+>>> {"op":"eval","code":"class Box extends Mutable { var x: Int = 0 }"}
+~ "ok":true
+
+>>> {"op":"eval","code":"def k(): Int = { val b = new Box; eval[Int](\"val pure: () -> Int = () => b.x; pure()\") }"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val out: Int = k()"}
+~ "ok":false.*(capture|capability|flow|b.rd|read-only|readOnly)

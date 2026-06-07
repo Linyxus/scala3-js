@@ -209,19 +209,19 @@ class JSReplPhase extends Phase:
     import untpd.*
     parts.tail.foldLeft(Ident(termName(parts.head)): Tree)((acc, p) => Select(acc, termName(p)))
 
-  /** `scala.scalajs.js.Dynamic.global.globalThis.__replRenders.push(name, ReplRenderer.replStringOf(valueRef))`
+  /** `scala.runtime.ReplRenderBridge.push(name, ReplRenderer.replStringOf(valueRef))`
    *
-   *  The bridge array is addressed through `globalThis` (a property access on the
-   *  real global object) rather than a bare `__replRenders` global ref: under a
-   *  strict-mode runtime (Node) a bare assignment to an undeclared global throws
-   *  `ReferenceError`, whereas a property set on `globalThis` is always allowed.
-   *  See the matching access in `InterpreterRunner.{resetBridge,readBridge}`. */
+   *  The actual `js.Dynamic` push onto the global `__replRenders` array lives in
+   *  `ReplRenderBridge` (its `library-js` override), not inline here. Both this
+   *  call and `ReplRenderer.replStringOf` are in the `scala.runtime` package,
+   *  which `SafeRefs` treats as assumed-safe, so the injected render survives a
+   *  `language.experimental.safe` session — whereas an inline `js.Dynamic`
+   *  selection would be rejected. See the matching global access in
+   *  `InterpreterRunner.{resetBridge,readBridge}`. */
   private def pushRender(name: String, valueRef: untpd.Tree)(using Context): untpd.Tree =
     import untpd.*
-    val global       = dotted("scala", "scalajs", "js", "Dynamic", "global", "globalThis")
-    val rendersArray = Select(global, termName("__replRenders"))
-    val rendered     = Apply(dotted("scala", "runtime", "ReplRenderer", "replStringOf"), List(valueRef))
-    Apply(Select(rendersArray, termName("push")), List(Literal(Constant(name)), rendered))
+    val rendered = Apply(dotted("scala", "runtime", "ReplRenderer", "replStringOf"), List(valueRef))
+    Apply(dotted("scala", "runtime", "ReplRenderBridge", "push"), List(Literal(Constant(name)), rendered))
 
 /** Writes each compiled REPL line's TASTY to the session output dir (one
  *  `<fqcn>.tasty` per top-level class), so a fresh-context compile (notably the

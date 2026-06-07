@@ -1,0 +1,17 @@
+# DynamicEvalSafeModeTests: mutableVarCapturedByImpureLambdaInsideEvalAccepted.
+# Sibling of safe-var-pure-fn-rejected, but the body's function is the impure
+# `=>` form, which can carry the var's read effect in its inferred capture set.
+# So capturing the var is accepted: `def g` compiles, and calling it runs the
+# eval and renders the value.
+#
+# (Adapted from the reference's trait-based shape to the direct `() => r` form,
+# avoiding the reference test's incidental `asInstanceOf` in a dummy `map`, which
+# would itself be a safe-mode violation.)
+>>> {"op":"eval","code":"import language.experimental.safe"}
+~ "ok":true
+
+>>> {"op":"eval","code":"def g(): Int = { var r: Int = 1; eval[Int](\"val imp: () => Int = () => r; imp()\") }"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val out: Int = g()"}
+~ "ok":true.*val out: Int = 1

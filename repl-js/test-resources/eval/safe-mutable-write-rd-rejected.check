@@ -1,0 +1,19 @@
+# DynamicEvalSafeModeTests: mutableInstanceWriteThroughRdLambdaInBodyRejected.
+# A mutable class instance is captured as a `val` binding. Inside the body the
+# user declares a function with capture set `{b.rd}` (read-only access) and tries
+# to write `b.x = 1` through it. Writing requires the full `b` capability, not
+# just `b.rd`, so it is rejected.
+>>> {"op":"eval","code":"import language.experimental.safe"}
+~ "ok":true
+
+>>> {"op":"eval","code":"import caps.*"}
+~ "ok":true
+
+>>> {"op":"eval","code":"class Box extends Mutable { var x: Int = 0 }"}
+~ "ok":true
+
+>>> {"op":"eval","code":"def h(): Unit = { val b = new Box; eval[Unit](\"val ro: () ->{b.rd} Unit = () => { b.x = 1 }; ro()\") }"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val out: Unit = h()"}
+~ "ok":false.*(capture|capability|flow|update|read-only|readOnly)

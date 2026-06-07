@@ -1,0 +1,8 @@
+# DynamicEvalSafeModeTests: runtimeMutableRefInBodyRejected.
+# `scala.runtime.LongRef` is one of the mutable `scala.runtime.*Ref` types tagged
+# `@rejectSafe`. Constructing one inside the eval body is rejected.
+>>> {"op":"eval","code":"import language.experimental.safe"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val r = eval[Any](\"new scala.runtime.LongRef(0L)\")"}
+~ "ok":false.*(LongRef|rejectSafe|safe)
