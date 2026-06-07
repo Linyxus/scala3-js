@@ -1,23 +1,28 @@
 #!/usr/bin/env bash
 
 # Launch the Scala 3 compiler compiled to JavaScript via Scala.js.
-# Rebuilds (fastLinkJS + bundleLibs) if main.js is missing.
+#
+# sbt brings the artifacts up to date on every launch (same rationale as
+# bin/common-repl-js): rebuilding only when main.js was *missing* let edits to
+# compiler sources silently run against a stale linked main.js. We make sbt the
+# freshness authority instead — a warm `--client` no-ops what's already fresh,
+# and a build failure aborts the launch. Build logs go to stderr so they don't
+# mix into the compiler's own stdout.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" >& /dev/null && pwd)/.."
-
 FASTOPT_DIR="$ROOT/compiler-js-cli/target/scala3-compiler-cli-sjs"
 
-# Find main.js under the fastopt output (version-dependent path)
-MAIN_JS="$(find "$FASTOPT_DIR" -name "main.js" -path "*/scala3-compiler-cli-fastopt/*" 2>/dev/null | head -1)"
+echo "Ensuring compiler-js artifacts are up to date..." >&2
+if ! (cd "$ROOT" && sbt --client \
+      "scala3-compiler-cli-sjs/fastLinkJS; scala3-compiler-cli-sjs/bundleLibs" 1>&2); then
+  echo "Error: sbt build failed; refusing to launch against stale artifacts." >&2
+  exit 1
+fi
 
+MAIN_JS="$(find "$FASTOPT_DIR" -name "main.js" -path "*/scala3-compiler-cli-fastopt/*" 2>/dev/null | head -1)"
 if [ -z "$MAIN_JS" ]; then
-  echo "Building compiler-js CLI (fastLinkJS + bundleLibs)..."
-  (cd "$ROOT" && sbt --client 'scala3-compiler-cli-sjs/fastLinkJS' 'scala3-compiler-cli-sjs/bundleLibs')
-  MAIN_JS="$(find "$FASTOPT_DIR" -name "main.js" -path "*/scala3-compiler-cli-fastopt/*" 2>/dev/null | head -1)"
-  if [ -z "$MAIN_JS" ]; then
-    echo "Error: failed to build compiler-js" >&2
-    exit 1
-  fi
+  echo "Error: build succeeded but main.js not found under scala3-compiler-cli-fastopt." >&2
+  exit 1
 fi
 
 exec node "$MAIN_JS" "$@"
