@@ -1,0 +1,7 @@
+# An eval body can itself call eval; each inner call captures its own bindings.
+>>> {"op":"eval","code":"val r1 = List(1,2,3).map(x => eval[Int](s\"List($x, ${x*2}).map(y => eval[Int](\\\"y + 1\\\")).sum\"))"}
+{"op":"eval","ok":true,"output":"val r1: List[Int] = List(5, 8, 11)\n","stdout":"","stderr":"","stateVersion":1}
+
+# Same call site in a loop: compiled once, re-instantiated per iteration value.
+>>> {"op":"eval","code":"val r2 = (1 to 4).toList.map(k => eval[Int](\"k * k\"))"}
+{"op":"eval","ok":true,"output":"val r2: List[Int] = List(1, 4, 9, 16)\n","stdout":"","stderr":"","stateVersion":2}

@@ -1,0 +1,13 @@
+# A captured `var` is reached through a live VarRef facade: reads see the current
+# value and writes from inside the eval body are visible afterwards.
+>>> {"op":"eval","code":"var n = 10"}
+{"op":"eval","ok":true,"output":"var n: Int = 10\n","stdout":"","stderr":"","stateVersion":1}
+
+>>> {"op":"eval","code":"val r1: Int = eval(\"n + 5\")"}
+{"op":"eval","ok":true,"output":"val r1: Int = 15\n","stdout":"","stderr":"","stateVersion":2}
+
+>>> {"op":"eval","code":"eval[Unit](\"n = n + 5\")"}
+{"op":"eval","ok":true,"output":"","stdout":"","stderr":"","stateVersion":3}
+
+>>> {"op":"eval","code":"n"}
+{"op":"eval","ok":true,"output":"val res0: Int = 15\n","stdout":"","stderr":"","stateVersion":4}

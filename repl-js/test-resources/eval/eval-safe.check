@@ -1,0 +1,10 @@
+# evalSafe is non-throwing: a compile failure becomes an EvalResult.Failure value
+# carrying the diagnostics, so an agent loop can react instead of catching.
+>>> {"op":"eval","code":"val ok = evalSafe[Int](\"3 + 4\").getOrElse(-1)"}
+{"op":"eval","ok":true,"output":"val ok: Int = 7\n","stdout":"","stderr":"","stateVersion":1}
+
+>>> {"op":"eval","code":"val failed = evalSafe[Int](\"not code\").isFailure"}
+{"op":"eval","ok":true,"output":"val failed: Boolean = true\n","stdout":"","stderr":"","stateVersion":2}
+
+>>> {"op":"eval","code":"val errs = evalSafe[Int](\"1 +\") match { case scala.runtime.eval.EvalResult.Failure(f) => f.errors.length > 0; case _ => false }"}
+{"op":"eval","ok":true,"output":"val errs: Boolean = true\n","stdout":"","stderr":"","stateVersion":3}

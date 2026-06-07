@@ -1,0 +1,31 @@
+# Return types via the polymorphic T (value renders through the normal REPL path)
+>>> {"op":"eval","code":"val a: Int = eval(\"1 + 2\")"}
+{"op":"eval","ok":true,"output":"val a: Int = 3\n","stdout":"","stderr":"","stateVersion":1}
+
+>>> {"op":"eval","code":"val b: Long = eval(\"1000000000000L\")"}
+{"op":"eval","ok":true,"output":"val b: Long = 1000000000000L\n","stdout":"","stderr":"","stateVersion":2}
+
+>>> {"op":"eval","code":"val c: Boolean = eval(\"1 < 2 && 3 != 4\")"}
+{"op":"eval","ok":true,"output":"val c: Boolean = true\n","stdout":"","stderr":"","stateVersion":3}
+
+>>> {"op":"eval","code":"val d: Char = eval(\"'a'.toUpper\")"}
+{"op":"eval","ok":true,"output":"val d: Char = 'A'\n","stdout":"","stderr":"","stateVersion":4}
+
+>>> {"op":"eval","code":"val e: String = eval(\"\\\"ab\\\" + \\\"cd\\\"\")"}
+{"op":"eval","ok":true,"output":"val e: String = \"abcd\"\n","stdout":"","stderr":"","stateVersion":5}
+
+>>> {"op":"eval","code":"val f: List[Int] = eval(\"List(1,2,3).map(_ * 2)\")"}
+{"op":"eval","ok":true,"output":"val f: List[Int] = List(2, 4, 6)\n","stdout":"","stderr":"","stateVersion":6}
+
+>>> {"op":"eval","code":"val g: Option[Int] = eval(\"Some(5)\")"}
+{"op":"eval","ok":true,"output":"val g: Option[Int] = Some(5)\n","stdout":"","stderr":"","stateVersion":7}
+
+>>> {"op":"eval","code":"val h: (Int, String) = eval(\"(1, \\\"x\\\")\")"}
+{"op":"eval","ok":true,"output":"val h: (Int, String) = (1, \"x\")\n","stdout":"","stderr":"","stateVersion":8}
+
+>>> {"op":"eval","code":"val i: Unit = eval(\"()\")"}
+{"op":"eval","ok":true,"output":"val i: Unit = undefined\n","stdout":"","stderr":"","stateVersion":9}
+
+# Inferred T from an explicit [T] argument
+>>> {"op":"eval","code":"val j = eval[Int](\"21 * 2\")"}
+{"op":"eval","ok":true,"output":"val j: Int = 42\n","stdout":"","stderr":"","stateVersion":10}

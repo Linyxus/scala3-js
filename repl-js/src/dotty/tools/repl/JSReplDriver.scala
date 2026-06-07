@@ -401,6 +401,7 @@ class JSReplDriver(
     compiler = new JSReplCompiler
     fed.clear()
     evalCache.clear()
+    evalIdCounter = 0
     currentState = null
     ReplCompiler.objectNames.clear()
 

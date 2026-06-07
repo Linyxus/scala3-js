@@ -1,0 +1,12 @@
+# The body is any runtime String, not a literal: from a val, an interpolation, …
+>>> {"op":"eval","code":"val code = \"10 + 5\""}
+{"op":"eval","ok":true,"output":"val code: String = \"10 + 5\"\n","stdout":"","stderr":"","stateVersion":1}
+
+>>> {"op":"eval","code":"val r1: Int = eval(code)"}
+{"op":"eval","ok":true,"output":"val r1: Int = 15\n","stdout":"","stderr":"","stateVersion":2}
+
+>>> {"op":"eval","code":"val m = 6"}
+{"op":"eval","ok":true,"output":"val m: Int = 6\n","stdout":"","stderr":"","stateVersion":3}
+
+>>> {"op":"eval","code":"val r2: Int = eval(s\"$m * 7\")"}
+{"op":"eval","ok":true,"output":"val r2: Int = 42\n","stdout":"","stderr":"","stateVersion":4}

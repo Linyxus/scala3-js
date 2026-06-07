@@ -63,6 +63,25 @@ object Build {
   val bundleLibs = taskKey[File]("Bundle JDK, scala-library, and scala3-library class files next to main.js")
   val packClasspath = taskKey[File]("Pack all classpath files into a single classpath.bin archive")
   val packLinkerLibs = taskKey[File]("Pack .sjsir library files into linker-libs.bin")
+  val updateEvalChecks = taskKey[Unit]("Regenerate the eval scripted-test checkfiles in repl-js/test-resources/eval")
+
+  /** Run the JSON-REPL eval scripted tests (or regenerate their checkfiles when
+   *  `update`): node-run the linked Test main with the packed compiler archives
+   *  and the scripts directory passed via env. Shared by `Test / test` and
+   *  `updateEvalChecks` of `scala3-repl-json-sjs`. */
+  private def runEvalScriptedTests(
+      classpathBin: File, linkerLibsBin: File, mainJs: File,
+      scriptsDir: File, cwd: File, update: Boolean, log: sbt.util.Logger): Unit = {
+    val env = Seq(
+      "DOTTY_CLASSPATH_BIN"   -> classpathBin.getAbsolutePath,
+      "DOTTY_LINKER_LIBS_BIN" -> linkerLibsBin.getAbsolutePath,
+      "EVAL_SCRIPTS_DIR"      -> scriptsDir.getAbsolutePath
+    )
+    val cmd = Seq("node", mainJs.getAbsolutePath) ++ (if (update) Seq("--update") else Nil)
+    log.info((if (update) "Updating" else "Running") + s" eval scripted tests ($scriptsDir)")
+    val exit = _root_.scala.sys.process.Process(cmd, cwd, env: _*).!
+    if (!update && exit != 0) sys.error(s"eval scripted tests failed (exit code $exit)")
+  }
   val prepareBinaryAssets = taskKey[File]("Build fullLinkJS main.js + packed archives and generate the bun cli.ts entrypoint")
   val buildBinary = taskKey[File]("Build a standalone `scala3` executable with bun for the host platform")
   val buildBinaryAll = taskKey[Seq[File]]("Build standalone `scala3` executables for all release target platforms")
@@ -2654,6 +2673,33 @@ object Build {
       scalaJSUseMainModuleInitializer := true,
       Compile / mainClass := Some("dotty.tools.repl.JsonMain"),
       scalaJSLinkerConfig ~= { _.withESFeatures(_.withESVersion(ESVersion.ES2018)) },
+
+      // Scripted eval tests (the dotty `ScriptedTests` analogue). The driver,
+      // `dotty.tools.repl.EvalScriptedTests`, is a Test-config Scala.js main that
+      // replays the JSON transcripts in `repl-js/test-resources/eval` in-process
+      // through `JsonProtocol` and exact-matches every response. `Test / test`
+      // depends on the packed compiler archives, links the test main, and runs it
+      // on Node with the archive + scripts paths supplied via env. Run with
+      // `sbt scala3-repl-json-sjs/test`; regenerate checkfiles with
+      // `sbt scala3-repl-json-sjs/updateEvalChecks`.
+      Test / unmanagedSourceDirectories := Seq(baseDirectory.value / "test"),
+      Test / scalaJSUseMainModuleInitializer := true,
+      Test / scalaJSUseTestModuleInitializer := false,
+      Test / mainClass := Some("dotty.tools.repl.EvalScriptedTests"),
+      Test / test := runEvalScriptedTests(
+        (`scala3-compiler-cli-sjs` / packClasspath).value,
+        (`scala3-compiler-cli-sjs` / packLinkerLibs).value,
+        { val _ = (Test / fastLinkJS).value
+          (Test / fastLinkJS / scalaJSLinkerOutputDirectory).value / "main.js" },
+        (LocalRootProject / baseDirectory).value / "repl-js" / "test-resources" / "eval",
+        baseDirectory.value, update = false, streams.value.log),
+      updateEvalChecks := runEvalScriptedTests(
+        (`scala3-compiler-cli-sjs` / packClasspath).value,
+        (`scala3-compiler-cli-sjs` / packLinkerLibs).value,
+        { val _ = (Test / fastLinkJS).value
+          (Test / fastLinkJS / scalaJSLinkerOutputDirectory).value / "main.js" },
+        (LocalRootProject / baseDirectory).value / "repl-js" / "test-resources" / "eval",
+        baseDirectory.value, update = true, streams.value.log),
     )
 
   lazy val `scala3-presentation-compiler` = project.in(file("presentation-compiler"))

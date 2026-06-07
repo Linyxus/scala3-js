@@ -1,0 +1,10 @@
+# Generator/closure form: the lambda receives the call-site context and returns
+# the body string. The captured scope is still in view of the returned code.
+>>> {"op":"eval","code":"val r1 = eval[Int] { ctx => \"100 + 1\" }"}
+{"op":"eval","ok":true,"output":"val r1: Int = 101\n","stdout":"","stderr":"","stateVersion":1}
+
+>>> {"op":"eval","code":"val n = 5"}
+{"op":"eval","ok":true,"output":"val n: Int = 5\n","stdout":"","stderr":"","stateVersion":2}
+
+>>> {"op":"eval","code":"val r2 = eval[Int] { ctx => \"n + 1\" }"}
+{"op":"eval","ok":true,"output":"val r2: Int = 6\n","stdout":"","stderr":"","stateVersion":3}

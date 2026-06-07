@@ -1,0 +1,50 @@
+# The eval body resolves names from the live session and the call-site scope.
+# Previous-line val:
+>>> {"op":"eval","code":"val n = 10"}
+{"op":"eval","ok":true,"output":"val n: Int = 10\n","stdout":"","stderr":"","stateVersion":1}
+
+>>> {"op":"eval","code":"val r1: Int = eval(\"n * 4\")"}
+{"op":"eval","ok":true,"output":"val r1: Int = 40\n","stdout":"","stderr":"","stateVersion":2}
+
+# Previous-line def, called by a name computed at runtime:
+>>> {"op":"eval","code":"def f(j: Int) = j + 1"}
+{"op":"eval","ok":true,"output":"def f(j: Int): Int\n","stdout":"","stderr":"","stateVersion":3}
+
+>>> {"op":"eval","code":"val r2 = List(\"f\").map(fn => eval[Int](s\"$fn(1)\"))"}
+{"op":"eval","ok":true,"output":"val r2: List[Int] = List(2)\n","stdout":"","stderr":"","stateVersion":4}
+
+# Previous-line given, via summon:
+>>> {"op":"eval","code":"given Int = 7"}
+{"op":"eval","ok":true,"output":"lazy val given_Int: Int\n","stdout":"","stderr":"","stateVersion":5}
+
+>>> {"op":"eval","code":"val r3: Int = eval(\"summon[Int] * 6\")"}
+{"op":"eval","ok":true,"output":"val r3: Int = 42\n","stdout":"","stderr":"","stateVersion":6}
+
+# Lambda parameter captured as a binding:
+>>> {"op":"eval","code":"val r4 = List(1,2,3).map(z => eval[Int](\"z * z\"))"}
+{"op":"eval","ok":true,"output":"val r4: List[Int] = List(1, 4, 9)\n","stdout":"","stderr":"","stateVersion":7}
+
+# Two nested lambda params + a previous-line val together:
+>>> {"op":"eval","code":"val xss = List(List(0,1), List(2))"}
+{"op":"eval","ok":true,"output":"val xss: List[List[Int]] = List(List(0, 1), List(2))\n","stdout":"","stderr":"","stateVersion":8}
+
+>>> {"op":"eval","code":"val i = 2"}
+{"op":"eval","ok":true,"output":"val i: Int = 2\n","stdout":"","stderr":"","stateVersion":9}
+
+>>> {"op":"eval","code":"val r5 = xss.flatMap(xs => xs.map(x => eval[Int](\"(x + xs.length) * i\")))"}
+{"op":"eval","ok":true,"output":"val r5: List[Int] = List(4, 6, 6)\n","stdout":"","stderr":"","stateVersion":10}
+
+# Block-local val:
+>>> {"op":"eval","code":"val r6 = { val a = 8; eval[Int](\"a + 1\") }"}
+{"op":"eval","ok":true,"output":"val r6: Int = 9\n","stdout":"","stderr":"","stateVersion":11}
+
+# Method parameter:
+>>> {"op":"eval","code":"def g(p: Int): Int = eval[Int](\"p * 10\")"}
+{"op":"eval","ok":true,"output":"def g(p: Int): Int\n","stdout":"","stderr":"","stateVersion":12}
+
+>>> {"op":"eval","code":"val r7 = g(4)"}
+{"op":"eval","ok":true,"output":"val r7: Int = 40\n","stdout":"","stderr":"","stateVersion":13}
+
+# Block-local def (eta-expanded into a binding):
+>>> {"op":"eval","code":"val r8 = { def h(x: Int) = x * 3; eval[Int](\"h(4)\") }"}
+{"op":"eval","ok":true,"output":"val r8: Int = 12\n","stdout":"","stderr":"","stateVersion":14}
