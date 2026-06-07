@@ -37,14 +37,27 @@ class JSReplCompiler extends ReplCompiler:
     List(dotc.transform.CheckUnused.PostTyper(), dotc.transform.CheckShadowing()),
     List(CollectTopLevelImports()),
     List(dotc.transform.PostTyper()),
+    // Fill the synthetic args (`bindings`/`expectedType`/`enclosingSource`) of
+    // every `eval[T]` / `evalSafe[T]` call at this REPL line's call sites.
+    List(new eval.EvalRewriteTyped(None)),
     List(dotc.transform.UnrollDefinitions()),
   )
 
   /** Drop `JUnitBootstrappers`: it forces `org.junit.Test` (absent from the REPL
    *  classpath), so `jsdefn.junit.TestAnnotClass` is `NoSymbol` and its `.asClass`
-   *  throws a `ClassCastException` on Scala.js. The REPL never has JUnit tests. */
+   *  throws a `ClassCastException` on Scala.js. The REPL never has JUnit tests.
+   *
+   *  Also insert [[WriteReplTasty]] right after `Pickler` so each line's `.tasty`
+   *  lands in the session output dir. The JVM REPL gets this for free from
+   *  `GenBCode` (which embeds TASTY in `.class`); on Scala.js `GenBCode` is
+   *  stubbed, so without this a fresh-context compile (notably the dynamic
+   *  `eval(...)` inner compile) couldn't resolve `rs$line$N` wrappers. */
   override protected def transformPhases: List[List[Phase]] =
-    super.transformPhases.map(_.filterNot(_.isInstanceOf[dotc.transform.sjs.JUnitBootstrappers]))
+    val base = super.transformPhases.map(_.filterNot(_.isInstanceOf[dotc.transform.sjs.JUnitBootstrappers]))
+    // `transformPhases` runs right after dotty's `picklerPhases` (which includes
+    // `Pickler`, populating `unit.pickled`), so prepending here writes `.tasty`
+    // as early as possible.
+    List(new WriteReplTasty) :: base
 
 /** Mirrors the upstream `ReplPhase` wrapping, but appends the render statements +
  *  the `replMain` trigger to the generated `object rs$line$N`. */
@@ -113,7 +126,17 @@ class JSReplPhase extends Phase:
     val objectTermName = objectName.toTermName
     ReplCompiler.objectNames.update(defs.state.objectIndex, objectTermName)
 
-    val body = defs.stats ++ renderPushes(defs.stats) :+ replMain
+    // Auto-import the runtime `eval`/`evalSafe` entry points so the bare names
+    // resolve in user code without an explicit import.
+    val evalImport = Import(
+      dotted("scala", "runtime", "eval", "Eval"),
+      List(
+        ImportSelector(Ident(termName("eval"))),
+        ImportSelector(Ident(termName("evalSafe")))
+      )
+    ).withSpan(span)
+
+    val body = evalImport :: (defs.stats ++ renderPushes(defs.stats) :+ replMain)
     val tmpl = Template(emptyConstructor, Nil, Nil, EmptyValDef, body)
     val module = ModuleDef(objectTermName, tmpl).withSpan(span)
     PackageDef(Ident(nme.EMPTY_PACKAGE), List(module))
@@ -199,3 +222,48 @@ class JSReplPhase extends Phase:
     val rendersArray = Select(global, termName("__replRenders"))
     val rendered     = Apply(dotted("scala", "runtime", "ReplRenderer", "replStringOf"), List(valueRef))
     Apply(Select(rendersArray, termName("push")), List(Literal(Constant(name)), rendered))
+
+/** Writes each compiled REPL line's TASTY to the session output dir (one
+ *  `<fqcn>.tasty` per top-level class), so a fresh-context compile (notably the
+ *  dynamic `eval(...)` inner compile) can resolve `rs$line$N` wrappers from the
+ *  classpath. The JVM REPL gets this from `GenBCode`; on Scala.js `GenBCode` is
+ *  stubbed, so we pickle here.
+ *
+ *  We pickle the tree + attributes but deliberately SKIP the positions section:
+ *  position pickling of the REPL's synthetic wrapper trees trips a `-1` in
+ *  `PositionPickler` under the interpreter, and positions aren't needed for
+ *  symbol resolution. Runs first in `transformPhases` (right after `Pickler`). */
+class WriteReplTasty extends Phase:
+  import dotc.core.tasty.{TastyPickler, TreePickler, Attributes, AttributePickler, ScratchData}
+  import dotc.config.Feature
+  def phaseName: String = "writeReplTasty"
+  override def isCheckable: Boolean = false
+  protected def run(using Context): Unit =
+    val unit = ctx.compilationUnit
+    val tree = unit.tpdTree
+    if tree.isEmpty then return
+    val outDir = ctx.settings.outputDir.value
+    val attributes = Attributes(
+      sourceFile = unit.source.path,
+      scala2StandardLibrary = false,
+      explicitNulls = ctx.settings.YexplicitNulls.value,
+      captureChecked = Feature.ccEnabled,
+      withPureFuns = Feature.pureFunsEnabled,
+      isJava = false,
+      isOutline = false
+    )
+    for cls <- unit.pickled.keys do
+      val pickler = new TastyPickler(cls, isBestEffortTasty = false)
+      val treePkl = new TreePickler(pickler, attributes)
+      treePkl.pickle(tree :: Nil)
+      val scratch = new ScratchData
+      treePkl.compactify(scratch)
+      AttributePickler.pickleAttributes(attributes, pickler, scratch.attributeBuffer)
+      val bytes = pickler.assembleParts()
+      val parts = cls.fullName.mangledString.split('.').toList
+      var dir: dotty.tools.io.AbstractFile = outDir
+      for p <- parts.init do dir = dir.subdirectoryNamed(p)
+      val baseName = parts.last.stripSuffix("$")
+      val f = dir.fileNamed(baseName + ".tasty")
+      val os = f.output
+      try os.write(bytes) finally os.close()

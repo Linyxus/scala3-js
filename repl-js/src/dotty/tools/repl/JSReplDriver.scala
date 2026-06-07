@@ -105,6 +105,22 @@ class JSReplDriver(
 
   def initialState: State = State(0, 0, Map.empty, Set.empty, false, rootCtx)
 
+  // --- dynamic eval ----------------------------------------------------------
+
+  /** Latest post-compile state, so a runtime `eval(...)` callback compiles its
+   *  body against the most up-to-date session context (and can import even the
+   *  currently-executing line's earlier definitions). */
+  private var currentState: State | Null = null
+
+  /** Per-call-site cache of compiled eval `__Expression` classes (keyed on body
+   *  + enclosing source + imports). On a hit we skip recompilation and just
+   *  re-instantiate with the call's fresh bindings. Stores compile failures too,
+   *  so a bad body doesn't recompile every call. */
+  private val evalCache = mutable.Map.empty[String, Either[(Array[String], String), String]]
+
+  private var evalIdCounter = 0
+  private def nextEvalId(): String = { evalIdCounter += 1; "e" + evalIdCounter }
+
   // --- output ----------------------------------------------------------------
 
   private def emit(s: String): Unit = output(s)
@@ -164,6 +180,11 @@ class JSReplDriver(
           context = contextWithNewImports(newState.context, newImports),
         )
         val warnings = newState.context.reporter.removeBufferedMessages(using newState.context)
+
+        // Make the post-compile state visible to the `eval(...)` runtime callback
+        // before user code runs, so an eval call from within this very line can
+        // import this line's own wrapper.
+        currentState = newStateWithImports
 
         runWrapper(newState.objectIndex).map { runError =>
           inContext(newState.context):
@@ -379,6 +400,8 @@ class JSReplDriver(
     rootCtx = mkRootCtx(settings)
     compiler = new JSReplCompiler
     fed.clear()
+    evalCache.clear()
+    currentState = null
     ReplCompiler.objectNames.clear()
 
   private def success(state: State): EvalResult =
@@ -449,6 +472,120 @@ class JSReplDriver(
       else if f.name.endsWith(".sjsir") then Iterator((p, f.toByteArray))
       else Iterator.empty
     }.toMap
+
+  // --- dynamic eval runtime --------------------------------------------------
+
+  /** The JS-global bridge entry point installed by [[ReplSession]] as
+   *  `globalThis.__replEval`. `bindings` and the success `value` are opaque
+   *  interpreter values that round-trip through here untouched. */
+  def evalDynamicJS(code: js.Any, bindings: js.Any, expectedType: js.Any, enclosingSource: js.Any): js.Any =
+    evalDynamic(code.asInstanceOf[String], bindings,
+                expectedType.asInstanceOf[String], enclosingSource.asInstanceOf[String]) match
+      case Right(value) =>
+        js.Dynamic.literal(ok = true, value = value.asInstanceOf[js.Any])
+      case Left((errors, source)) =>
+        js.Dynamic.literal(ok = false, errors = js.Array(errors*), source = source)
+
+  private def evalDynamic(
+      code: String, bindings: Any, expectedType: String, enclosingSource: String
+  ): Either[(Array[String], String), Any] =
+    val state = currentState
+    if state == null then return Left((Array("eval: no active REPL state"), ""))
+
+    val imports = buildEvalImports(state)
+    val cacheable = enclosingSource.nonEmpty
+    val importsKey = imports.mkString("\n")
+    val key = if cacheable then code + " | " + enclosingSource + " | " + importsKey else null
+
+    if key != null then
+      evalCache.get(key) match
+        case Some(Left(failure))   => return Left(failure)
+        case Some(Right(className)) => return Right(runner.instantiateEval(className, bindings))
+        case None                   => ()
+
+    val uuid = nextEvalId()
+    val outputClassName = str.REPL_SESSION_LINE + uuid + "$__EvalExpression"
+    val wrapperName     = str.REPL_SESSION_LINE + uuid + "$__EvalWrapper"
+    val evalImport = "import scala.runtime.eval.Eval.{eval, evalSafe}\n"
+    val importBlock = if imports.isEmpty then evalImport else evalImport + imports.mkString("", "\n", "\n")
+    val wrappedSource = s"${importBlock}object $wrapperName {\n$enclosingSource\n}\n"
+
+    val outDir = new VirtualDirectory("(eval-output)", None)
+    val config = eval.EvalCompilerConfig(
+      outputClassName = outputClassName,
+      body = code,
+      expectedType = expectedType,
+      outerEnclosingSource = enclosingSource
+    )
+    evalCompile(wrappedSource, outDir, config) match
+      case Left(errors) =>
+        val failure = (errors.toArray, spliceBodyForDisplay(wrappedSource, code))
+        val isTransient = errors.exists(_.startsWith("Internal compiler error:"))
+        if key != null && !isTransient then evalCache.put(key, Left(failure))
+        Left(failure)
+      case Right(()) =>
+        runner.registerEvalClasses(collectSjsir(outDir))
+        val v = runner.instantiateEval(outputClassName, bindings)
+        if key != null then evalCache.put(key, Right(outputClassName))
+        Right(v)
+
+  /** Compile one eval wrapper source through [[eval.EvalCompiler]], writing
+   *  `.sjsir` into `outDir`. Reuses the session's `rootCtx` (same classpath +
+   *  `-scalajs` + `Mode.Interactive`), so the body type-checks against the live
+   *  session exactly as a REPL line would. */
+  private def evalCompile(
+      wrappedSource: String, outDir: VirtualDirectory, config: eval.EvalCompilerConfig
+  ): Either[Seq[String], Unit] =
+    val errors = mutable.ListBuffer.empty[String]
+    val reporter = new eval.EvalReporter(errors += _)
+    // The inner compile MUST run on a *fresh* `ContextBase` (new symbol table),
+    // not the session's `rootCtx`: dotc denotations are run-scoped, so reusing
+    // the session symbol table for this second run trips
+    // "denotation ... invalid in run N". A fresh base built the same way as the
+    // session (same `-scalajs` settings + `cpDir`+`sessionDir` classpath via
+    // `initCtx`) resolves prior-line wrappers from their `.tasty` in sessionDir.
+    setup(baseSettings, freshBaseCtx) match
+      case None => Left(Seq("eval: failed to set up inner compiler"))
+      case Some((_, ctx0)) =>
+        val base = ctx0.fresh
+          .setSetting(ctx0.settings.outputDir, outDir)
+          .setReporter(reporter)
+        base.base.initialize()(using base)
+        try
+          val compiler = new eval.EvalCompiler(config)
+          val run = compiler.newRun(using base)
+          // `compileSources` with an explicit virtual source, not
+          // `compileFromStrings` (which mints a UUID-named source and pulls in
+          // `java.security.SecureRandom`, absent under Scala.js).
+          val src = SourceFile.virtual("<eval-" + config.outputClassName + ">", wrappedSource)
+          run.compileSources(src :: Nil)
+          if reporter.hasErrors then Left(errors.toList)
+          else Right(())
+        catch case e: Throwable =>
+          Left(Seq(s"Internal compiler error: ${e.getClass.getName}: ${Option(e.getMessage).getOrElse("")}"))
+
+  /** Imports the eval body needs to see the live session: `import rs$line$N.*`
+   *  for each valid prior wrapper, plus the user-typed imports at each line. */
+  private def buildEvalImports(state: State): List[String] =
+    val printCtx = state.context.fresh.setSetting(state.context.settings.color, "never")
+    state.validObjectIndexes.flatMap { i =>
+      val wrapperImport = ReplCompiler.objectNames.get(i).map(n => s"import $n.{given, *}")
+      val userImports = state.imports.getOrElse(i, Nil).map(_.show(using printCtx))
+      wrapperImport ++ userImports
+    }.toList
+      // The eval auto-import (injected into every wrapper by JSReplPhase) is
+      // collected as a top-level import; drop it here since `evalDynamic` always
+      // prepends it explicitly. Avoids N duplicate import lines in the wrapper.
+      .filterNot(_.contains("scala.runtime.eval.Eval"))
+      .distinct
+
+  /** Replace the first marker in the wrapper source with the body, so compile
+   *  errors show the actual code rather than the placeholder. */
+  private def spliceBodyForDisplay(wrappedSource: String, body: String): String =
+    val marker = scala.runtime.eval.EvalContext.placeholder
+    val idx = wrappedSource.indexOf(marker)
+    if idx < 0 then wrappedSource
+    else wrappedSource.substring(0, idx) + body + wrappedSource.substring(idx + marker.length)
 
   // --- diagnostics -----------------------------------------------------------
 

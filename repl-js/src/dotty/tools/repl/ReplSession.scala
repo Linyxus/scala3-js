@@ -33,6 +33,14 @@ final class ReplSession private (
       ()
   )
 
+  // Install the World-B → World-A bridge for dynamic `eval(...)`: user code
+  // running inside the interpreter reaches the driver's compiler through this
+  // JS global (see `scala.runtime.eval.EvalBridge`).
+  js.Dynamic.global.globalThis.__replEval =
+    ((code: js.Any, bindings: js.Any, expectedType: js.Any, enclosingSource: js.Any) =>
+      driver.evalDynamicJS(code, bindings, expectedType, enclosingSource)
+    ): js.Function4[js.Any, js.Any, js.Any, js.Any, js.Any]
+
   private var state: State = driver.initialState
   private var stateVersion: Int = 0
 

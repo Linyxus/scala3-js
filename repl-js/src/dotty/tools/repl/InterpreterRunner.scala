@@ -10,6 +10,9 @@ import org.scalajs.sjsirinterpreter.core.Interpreter
 import org.scalajs.linker.interface.{Semantics, ModuleInitializer, IRFile}
 import org.scalajs.linker.standard.MemIRFileImpl
 import org.scalajs.ir.Version
+import org.scalajs.ir.{Names, Types, Position, Serializers}
+import org.scalajs.ir.Trees.ClassDef
+import java.nio.ByteBuffer
 
 /** Runs each REPL line on sjrd's `.sjsir` interpreter.
  *
@@ -76,6 +79,36 @@ class InterpreterRunner:
       _ <- interp.runModuleInitializers(
              List(ModuleInitializer.mainMethod(wrapperClassName, "replMain")))
     yield ()
+
+  // --- synchronous eval support (dynamic `eval(...)`) -----------------------
+  //
+  // A runtime `eval(...)` call executes *inside* the interpreter while the
+  // current line is mid-flight, so its compile→load→run cycle must be fully
+  // synchronous (the `Future` API would schedule work on the microtask queue
+  // that cannot run while the interpreter stack is blocked). The interpreter's
+  // evaluation core is synchronous; [[org.scalajs.sjsirinterpreter.core.EvalSupport]]
+  // (which lives in the interpreter's package to reach its `private[core]` API)
+  // drives it directly.
+
+  /** Synchronously register freshly-compiled eval `.sjsir` into the live
+   *  interpreter. The interpreter dedups by class name, so re-registering an
+   *  already-loaded class is a no-op. */
+  def registerEvalClasses(newSjsir: Map[String, Array[Byte]]): Unit =
+    val classDefs: List[ClassDef] =
+      newSjsir.iterator.map { case (_, bytes) =>
+        Serializers.deserialize(ByteBuffer.wrap(bytes))
+      }.toList
+    if classDefs.nonEmpty then
+      org.scalajs.sjsirinterpreter.core.EvalSupport.registerClassDefs(interp, classDefs)
+
+  /** Instantiate the synthesised `__EvalExpression` (passing the captured
+   *  `bindings` array, an opaque interpreter value threaded back from the eval
+   *  call site) and synchronously invoke its `evaluate()`, returning the body's
+   *  value. The class must already be registered (via [[registerEvalClasses]]
+   *  on a cache miss, or from a prior call on a cache hit). */
+  def instantiateEval(expressionClassName: String, bindings: Any): Any =
+    org.scalajs.sjsirinterpreter.core.EvalSupport.instantiateAndRun(
+      interp, expressionClassName, bindings)
 
 object InterpreterRunner:
 
