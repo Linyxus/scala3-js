@@ -2,5 +2,6 @@
 # forwarded into the inner compile.
 >>> {"op":"eval","code":"import language.experimental.captureChecking"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"val r: Int = eval(\"val f: Int -> Int = (n: Int) => n + 1; f(41)\")"}
 ~ "ok":true.*val r: Int = 42

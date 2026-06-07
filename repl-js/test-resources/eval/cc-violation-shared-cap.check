@@ -1,11 +1,15 @@
 # cc 2: a pure function in the body capturing a SharedCapability is rejected.
 >>> {"op":"eval","code":"import language.experimental.captureChecking"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"import caps.*"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"class IO extends SharedCapability"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"val io: IO = new IO"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"val r = eval(\"val f: () -> String = () => io.toString; f()\")"}
 ~ "ok":false.*(->\{|cannot flow into capture set|not included in the allowed capture set|CaptureChecking|capability|cannot be referenced)

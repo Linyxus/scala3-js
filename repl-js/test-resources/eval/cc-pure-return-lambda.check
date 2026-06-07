@@ -2,11 +2,15 @@
 # pure-function return position; rejected.
 >>> {"op":"eval","code":"import language.experimental.captureChecking"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"import caps.*"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"class IO extends SharedCapability"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"def mkPrinter(io: IO^): () -> Unit = eval[() -> Unit](\"() => println(io)\")"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"mkPrinter(new IO)"}
 ~ "ok":false.*(->\{|cannot flow into capture set|not included in the allowed capture set|CaptureChecking|capability|cannot be referenced)

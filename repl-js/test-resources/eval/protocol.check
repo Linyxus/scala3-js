@@ -1,0 +1,24 @@
+# JSONL protocol-level behaviour of the worker (parsed + dispatched by
+# JsonProtocol, the same path the stdio worker uses).
+# Malformed JSON -> a protocol error, not a crash.
+>>> {not json
+{"op":"protocol","ok":false,"error":"invalid JSON"}
+
+>>> {"op":"bogus"}
+{"op":"protocol","ok":false,"error":"unknown op"}
+
+# eval with a non-string code field is a protocol error.
+>>> {"op":"eval"}
+{"op":"protocol","ok":false,"error":"eval.code must be a string"}
+
+# reset reports the (zeroed) state version.
+>>> {"op":"reset"}
+{"op":"reset","ok":true,"stateVersion":0}
+
+# user stdout / stderr are captured separately from the rendered output.
+>>> {"op":"eval","code":"Console.println(\"out\"); Console.err.println(\"err\"); 7"}
+{"op":"eval","ok":true,"output":"val res2: Int = 7\n","stdout":"out\n","stderr":"err\n","stateVersion":1}
+
+# shutdown acknowledges and reports the current state version.
+>>> {"op":"shutdown"}
+{"op":"shutdown","ok":true,"stateVersion":1}

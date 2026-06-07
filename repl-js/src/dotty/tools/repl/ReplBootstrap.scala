@@ -29,6 +29,30 @@ object ReplBootstrap:
     try js.Dynamic.global.process.argv.asInstanceOf[js.Array[String]].toList.drop(2)
     catch case _: Throwable => Nil
 
+  /** Load the classpath dir + a library-loaded `InterpreterRunner` from the env
+   *  archives. Used by the transcript scripted tests, which drive the lower-level
+   *  driver/runner directly (one fresh session per transcript). */
+  def createRunnerFromEnv(): Option[(dotty.tools.io.VirtualDirectory, InterpreterRunner, Future[Unit])] =
+    (env("DOTTY_CLASSPATH_BIN"), env("DOTTY_LINKER_LIBS_BIN")) match
+      case (Some(cp), Some(lib)) =>
+        val cpDir = ClasspathBlob.load(readArrayBuffer(cp))
+        val runner = new InterpreterRunner
+        Some((cpDir, runner, runner.loadLibrary(readArrayBuffer(lib))))
+      case _ => None
+
+  def readFileLines(path: String): List[String] =
+    val content = js.Dynamic.global.require("fs").readFileSync(path, "utf-8").asInstanceOf[String]
+    val arr = content.split("\n", -1).toList
+    if arr.nonEmpty && arr.last == "" then arr.init else arr
+
+  def readFileOpt(path: String): Option[String] =
+    try Some(js.Dynamic.global.require("fs").readFileSync(path, "utf-8").asInstanceOf[String])
+    catch case _: Throwable => None
+
+  def listFiles(dir: String): List[String] =
+    try js.Dynamic.global.require("fs").readdirSync(dir).asInstanceOf[js.Array[String]].toList
+    catch case _: Throwable => Nil
+
   def hasProcess: Boolean =
     try { val _ = js.Dynamic.global.process.argv; true }
     catch { case _: Throwable => false }

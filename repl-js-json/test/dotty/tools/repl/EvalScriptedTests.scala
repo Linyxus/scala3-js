@@ -16,10 +16,10 @@ import scala.scalajs.js
  *  freshly reset session, replayed in-process through [[JsonProtocol]] — the same
  *  path the worker uses — and each response is compared verbatim.
  *
- *  Usage (via `bin/test-eval-json`):
- *    node …/main.js [filter] [--update]
- *      filter    run only files whose name contains this substring
- *      --update  regenerate the expected-response lines (checkfile model)
+ *  Run with `sbt scala3-repl-json-sjs/test`; regenerate the expected-response
+ *  lines (checkfile model) with `sbt scala3-repl-json-sjs/updateEvalChecks`.
+ *  A name-substring filter and `--update` may also be passed as plain args when
+ *  invoking the linked main directly (`node …/main.js [filter] [--update]`).
  */
 object EvalScriptedTests:
 

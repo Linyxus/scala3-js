@@ -58,30 +58,13 @@ object Main:
 
   private val Prompt = "scala>"
 
-  /** Replay a scripted-test file: reproduce the full transcript on stdout so the
-   *  harness can diff it against the file. Mirrors `ReplTest.testScript`. */
+  /** Replay a scripted-test file: reproduce the full transcript on stdout (shared
+   *  with the scripted-test driver via [[ScriptedRepl]]). */
   private def runScript(cpDir: VirtualDirectory, sessionDir: VirtualDirectory,
                         runner: InterpreterRunner, file: String): Unit =
-    val all = readFileLines(file)
-    // An optional leading `//> using options …` directive becomes compiler
-    // settings (and is echoed as the transcript's first line, as on the JVM).
-    val (optsLine, body) = all.headOption match
-      case Some(h) if h.trim.startsWith("//>") || h.trim.startsWith("// scalac:") => (Some(h), all.tail)
-      case _ => (None, all)
-    val extra = optsLine.map(parseUsingOptions).getOrElse(Nil)
-    val driver = new JSReplDriver(cpDir, sessionDir, runner, extra)
-
-    optsLine.foreach(println)
-    val inputs = body.filter(_.startsWith(Prompt))
-    runLines(driver, inputs, driver.initialState)
-
-  private def parseUsingOptions(line: String): List[String] =
-    val t = line.trim
-    val rest =
-      if t.startsWith("//> using options") then t.stripPrefix("//> using options")
-      else if t.startsWith("// scalac:") then t.stripPrefix("// scalac:")
-      else ""
-    rest.trim.split("\\s+").toList.filter(_.nonEmpty)
+    ScriptedRepl.reproduce(cpDir, sessionDir, runner, ReplBootstrap.readFileLines(file),
+      s => { js.Dynamic.global.process.stdout.write(s); () })
+    ()
 
   /** Evaluate `scala> …` lines sequentially: echo each verbatim, then feed the
    *  text after the prompt to the driver (which prints the rendered output). */
@@ -143,12 +126,6 @@ object Main:
     val fs = js.Dynamic.global.require("fs")
     val u8 = fs.readFileSync(path).asInstanceOf[Uint8Array]
     u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength)
-
-  private def readFileLines(path: String): List[String] =
-    val fs = js.Dynamic.global.require("fs")
-    val content = fs.readFileSync(path, "utf-8").asInstanceOf[String]
-    val arr = content.split("\n", -1).toList
-    if arr.nonEmpty && arr.last == "" then arr.init else arr
 
   private def setExitCode(code: Int): Unit =
     try js.Dynamic.global.process.exitCode = code

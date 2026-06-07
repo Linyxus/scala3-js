@@ -2,17 +2,24 @@
 # f's capability into the enclosing pure lambda; the call should compile.
 >>> {"op":"eval","code":"import language.experimental.captureChecking"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"import caps.*"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"trait IOCap extends SharedCapability"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"trait Classified[T] { def map[U](f: T ->{any.rd} U): Classified[U] }"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"def useIO[T](body: IOCap ?=> T): T = body(using new IOCap {})"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"def specialRef(using io: IOCap): AnyRef^{io} = new AnyRef"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"def classify[T](x: T): Classified[T] = new Classified[T] { def map[U](f: T ->{any.rd} U): Classified[U] = classify(f(x)) }"}
 ~ "ok":true
+
 >>> {"op":"eval","code":"val r: Classified[Int] = useIO { val f = specialRef; val ss = classify(\"hello\"); ss.map(s => eval[Int](\"s.length\")) }"}
 ~ "ok":true.*Classified\[Int\]
