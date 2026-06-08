@@ -35,8 +35,12 @@ object ReplScriptedTests:
           runAll(client, dir, excludes, filter).flatMap {
             case (passed, failed, skipped) =>
               runEvalErrorSmoke(client).map { ok =>
-                if ok then (passed + 1, failed, skipped)
-                else (passed, failed + 1, skipped)
+                val afterEvalSmoke =
+                  if ok then (passed + 1, failed, skipped)
+                  else (passed, failed + 1, skipped)
+                val (passed1, failed1, skipped1) = afterEvalSmoke
+                if runLineEditorSmoke() then (passed1 + 1, failed1, skipped1)
+                else (passed1, failed1 + 1, skipped1)
               }
           }
         }.onComplete {
@@ -91,6 +95,47 @@ object ReplScriptedTests:
         println(actual)
         false
     }
+
+  private def runLineEditorSmoke(): Boolean =
+    def check(cond: Boolean, clue: String): Boolean =
+      if cond then true
+      else
+        println(s"line-editor-smoke: $clue")
+        false
+
+    val editor = new ReplLineEditor(historyLimit = 10)
+
+    editor.insert("val x =")
+    editor.insertNewline()
+    editor.insert("  1")
+    val multilineOk = check(editor.accept() == "val x =\n  1", "shift-enter newline was not preserved")
+
+    editor.insert("abc")
+    editor.moveToLineStart()
+    editor.insert("x")
+    editor.moveToLineEnd()
+    editor.insert("y")
+    editor.moveToLineStart()
+    editor.killToLineEnd()
+    val ctrlOk = check(editor.buffer == "", "ctrl-style line editing produced the wrong buffer")
+
+    editor.insert("first")
+    editor.accept()
+    editor.insert("second")
+    editor.accept()
+    editor.previousHistory()
+    val hist1 = editor.buffer == "second"
+    editor.previousHistory()
+    val hist2 = editor.buffer == "first"
+    editor.nextHistory()
+    val hist3 = editor.buffer == "second"
+    editor.nextHistory()
+    val historyOk = check(hist1 && hist2 && hist3 && editor.buffer == "", "history navigation failed")
+
+    val ok = multilineOk && ctrlOk && historyOk
+    if ok then println("PASS line-editor-smoke")
+    else println("FAIL line-editor-smoke")
+    ok
 
   /** FileDiff semantics: keep only lines with a non-whitespace char. */
   private def nonBlank(lines: List[String]): List[String] =

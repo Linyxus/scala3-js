@@ -76,30 +76,35 @@ object Main:
 
   /** Interactive read-eval-print loop over Node's `readline`. */
   private def interactive(client: JsonReplClient): Unit =
-    val readline = js.Dynamic.global.require("readline")
     val process  = js.Dynamic.global.process
-    val rl = readline.createInterface(js.Dynamic.literal(
-      input = process.stdin, output = process.stdout, terminal = false))
     println("Welcome to Scala 3 on JavaScript (scala3-repl-sjs).")
     println("Evaluates each line incrementally on the JS compiler + .sjsir interpreter. Type :quit to exit.")
 
     val pending = scala.collection.mutable.Queue[String]()
     var busy    = false
     var ended   = false
+    lazy val lineReader: ConsoleLineReader =
+      ConsoleLineReader.create(
+        process,
+        s"$Prompt ",
+        l => { pending.enqueue(l); pump() },
+        () => { ended = true; pump() },
+      )
 
     def quit(): Unit =
-      try rl.close() catch case _: Throwable => ()
+      try lineReader.close() catch case _: Throwable => ()
       process.exit(0)
 
-    def prompt(): Unit = { js.Dynamic.global.process.stdout.write("scala> "); () }
+    def prompt(): Unit = lineReader.prompt()
 
     def pump(): Unit =
       if busy then ()
       else if pending.nonEmpty then
-        pending.dequeue().trim match
+        val line = pending.dequeue()
+        line.trim match
           case ":quit" | ":q" => quit()
-          case ""             => pump()
-          case line =>
+          case ""             => prompt(); pump()
+          case _ =>
             busy = true
             val evalF = client.eval(line)
             evalF.foreach { result =>
@@ -119,8 +124,6 @@ object Main:
       else if ended then quit()
 
     prompt()
-    rl.on("line", ((l: String) => { pending.enqueue(l); pump() }): js.Function1[String, Unit])
-    rl.on("close", (() => { ended = true; pump() }): js.Function0[Unit])
 
   private def reportError(e: Throwable): Unit =
     Console.err.println(Option(e.getMessage).filter(_.nonEmpty).getOrElse(e.toString))

@@ -166,9 +166,7 @@ class JSReplDriver(
 
     compiler.compile(parsed).fold(
       { case (errs, newState) =>
-        val failedState =
-          newState.copy(invalidObjectIndexes = newState.invalidObjectIndexes + newState.objectIndex)
-        val next = displayErrors(errs, failedState)
+        val next = displayErrors(errs, newState)
         Future.successful(failure(next, diagnosticsMessage(errs)))
       },
       { case (unit, newState) =>
