@@ -132,7 +132,8 @@ class JSReplPhase extends Phase:
       dotted("scala", "runtime", "eval", "Eval"),
       List(
         ImportSelector(Ident(termName("eval"))),
-        ImportSelector(Ident(termName("evalSafe")))
+        ImportSelector(Ident(termName("evalSafe"))),
+        ImportSelector(Ident(termName("evalLoop")))
       )
     ).withSpan(span)
 

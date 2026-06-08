@@ -6,6 +6,7 @@
 >>> {"op":"eval","code":"val xs: List[Int] = List(evalLoop { (ctx, s) => s.complete(1) })"}
 ~ "ok":true.*val xs: List\[Int\] = List\(1\)
 
-# With no expected type and no [R], inference has nothing to drive it.
+# With no expected type and no [R], the compiler is allowed to fall back to its
+# natural inferred result type for the call.
 >>> {"op":"eval","code":"evalLoop { (ctx, s) => s.complete(1) }"}
-~ "ok":false
+~ "ok":true.*= 1

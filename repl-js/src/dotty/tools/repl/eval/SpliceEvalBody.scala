@@ -111,8 +111,20 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
           val effectiveBody =
             if parenslessDefNames.isEmpty then body
             else stripEmptyApplyFor(body, parenslessDefNames)
-          val markerReplacement = mkExprBlock(effectiveBody, expr, hoistedGivens = givens)
-          val keptStats = stats.filterNot(s => s.isInstanceOf[ValDef] && s.asInstanceOf[ValDef].mods.flags.is(Given))
+          val bodyTermNames = topLevelTermNames(effectiveBody)
+          val sessionAliases =
+            if !config.sessionLine then Nil
+            else stats.collect {
+              case vd: ValDef if isPriorLineAlias(vd) && !bodyTermNames(vd.name) => vd
+            }
+          val sessionImports =
+            if !config.sessionLine then Nil
+            else stats.collect {
+              case imp: Import if isPriorLineImport(imp) => imp
+            }
+          val hoistedStats: List[Tree] = givens ++ sessionImports ++ sessionAliases
+          val markerReplacement = mkExprBlock(effectiveBody, expr, hoistedStats)
+          val keptStats = stats.filterNot(s => hoistedStats.exists(_ eq s))
           if keptStats.isEmpty then markerReplacement
           else cpy.Block(bk)(keptStats.map(transform), markerReplacement)
 
@@ -146,8 +158,27 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
     s"""class ${config.outputClassName}(bindings: Array[scala.runtime.eval.Eval.Binding])
        |  extends scala.runtime.eval.EvalExpressionBase(bindings) {
        |  def evaluate(): Any = ()
-       |}
-       |""".stripMargin
+      |}
+      |""".stripMargin
+
+  private def topLevelTermNames(tree: Tree): Set[Name] =
+    tree match
+      case Block(stats, _) =>
+        stats.collect {
+          case vd: ValDef if !vd.name.isEmpty => vd.name
+          case dd: DefDef if dd.name != nme.CONSTRUCTOR && !dd.name.isEmpty => dd.name
+        }.toSet
+      case _ => Set.empty
+
+  private def isPriorLineAlias(tree: ValDef)(using Context): Boolean =
+    tree.rhs match
+      case Select(Ident(name), _) => name.toString.startsWith("__line")
+      case _ => false
+
+  private def isPriorLineImport(tree: Import): Boolean =
+    tree.expr match
+      case Ident(name) => name.toString.startsWith("__line")
+      case _ => false
 
   /** Build the splice block for the marker site:
    *  ```
@@ -156,7 +187,7 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
    *  The val carries the body's value for [[ExtractEvalBody]] to drain; the
    *  `__noFold__` effect prevents constant-folding of the surrounding expression;
    *  the block ends in `__evalResult` so the splice takes the body's type. */
-  private def mkExprBlock(body: Tree, markerTree: Tree, hoistedGivens: List[ValDef] = Nil)(using Context): Tree =
+  private def mkExprBlock(body: Tree, markerTree: Tree, hoistedStats: List[Tree] = Nil)(using Context): Tree =
     val span = markerTree.span
     if spliced then
       warnOrError(s"eval body marker `${config.marker}` appears more than once", markerTree.srcPos)
@@ -164,8 +195,10 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
     else
       spliced = true
       val effectiveBody: Tree =
-        if hoistedGivens.isEmpty then body
-        else Block(hoistedGivens, body).withSpan(body.span)
+        if hoistedStats.isEmpty then body
+        else body match
+          case Block(stats, expr) => cpy.Block(body)(hoistedStats ++ stats, expr)
+          case _ => Block(hoistedStats, body).withSpan(body.span)
       val valTpt: Tree =
         if config.expectedType.isEmpty then TypeTree()
         else parseTypeFromString(config.expectedType, span)

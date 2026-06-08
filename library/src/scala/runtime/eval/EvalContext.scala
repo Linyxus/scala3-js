@@ -13,12 +13,26 @@ package scala.runtime.eval
  */
 final class EvalContext(
     val enclosingSource: String,
-    val bindings: Array[Eval.Binding]
+    val bindings: Array[Eval.Binding],
+    private[eval] val loopState: LoopState | Null = null
 ):
   /** The string the rewriter substituted into `enclosingSource` at the eval
    *  call's location. Splice generated code with
    *  `enclosingSource.replace(placeholder, generated)`. */
   def placeholder: String = EvalContext.placeholder
+
+  /** Number of lines attempted in the enclosing [[Eval.evalLoop]], or `0` for
+   *  ordinary one-shot eval contexts. */
+  def attempts: Int =
+    if loopState == null then 0 else loopState.attempts
+
+  /** History of lines attempted in the enclosing [[Eval.evalLoop]], oldest first. */
+  def history: List[EvalAttempt] =
+    if loopState == null then Nil else loopState.history
+
+  /** Most recent compile error reported by `EvalSession.evalSafe`, if any. */
+  def lastError: Option[Array[String]] =
+    if loopState == null then None else loopState.lastError
 
   override def toString: String =
     s"EvalContext(enclosingSource=${enclosingSource.length} chars, bindings=${bindings.length})"

@@ -111,6 +111,17 @@ object Eval:
    *  `ExtractEvalBody` later drains. */
   def __noFold__(): Unit = ()
 
+  /** Typing-only stand-in for a prior session-line instance. The driver injects
+   *  `val __lineK: <ClassK> = Eval.sessionPlaceholder[<ClassK>]` into a session
+   *  line's typing wrapper so `import __lineK.*` resolves accumulated members;
+   *  the val is local to the (pruned) wrapper and `ExtractEvalBody` lowers every
+   *  `__lineK` reference to a captured-binding lookup, so this never runs. It
+   *  lives on the `@caps.assumeSafe` `Eval` object so the preamble compiles under
+   *  safe mode (unlike `scala.compiletime.uninitialized`, which safe mode
+   *  rejects). */
+  def sessionPlaceholder[T]: T =
+    throw new UnsupportedOperationException("Eval.sessionPlaceholder is a typing-only stand-in")
+
   /** Compile-failure descriptor produced by the wrapper compile and carried back
    *  through the bridge. Surfaced as the failure side of [[EvalResult]] (and as
    *  the data behind [[EvalCompileException]] for the throwing form). */
@@ -119,6 +130,28 @@ object Eval:
       s"CompileFailure(${errors.length} error(s))"
 
   // --- public entry points ---------------------------------------------------
+
+  /** Open a stateful dynamic-eval loop. The loop body must exit through
+   *  `session.complete(value)`, which breaks to this boundary and returns `value`.
+   *
+   *  Like the `eval[T](gen)` generator form, the loop's [[EvalContext]] is given
+   *  the call site's surrounding source and captured locals: the rewriter
+   *  (`EvalRewriteTyped`) fills `bindings` and `enclosingSource` from the
+   *  `evalLoop(...)` call site, and they back `session.ctx` so the body can read
+   *  `ctx.enclosingSource` / `ctx.bindings`. `expectedType` (the rendered `R`) is
+   *  filled for symmetry with the eval surface; direct callers leave all three at
+   *  their defaults. */
+  def evalLoop[R](
+      body: (EvalContext, EvalSession[R]) => Nothing,
+      bindings: Array[Binding] = Array.empty[Binding],
+      expectedType: String = "",
+      enclosingSource: String = ""
+  ): R =
+    scala.util.boundary[R]:
+      import caps.unsafe.unsafeAssumePure
+      val session = new EvalSession[R](
+        summon[scala.util.boundary.Label[R]], bindings, enclosingSource)
+      body(session.ctx, session.unsafeAssumePure)
 
   /** Compile and run `code` against the current REPL session, returning `T`.
    *

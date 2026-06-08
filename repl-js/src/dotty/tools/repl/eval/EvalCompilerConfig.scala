@@ -6,6 +6,7 @@ import dotty.tools.dotc.core.Contexts.*
 import dotty.tools.dotc.core.Symbols.*
 import dotty.tools.dotc.core.Names.*
 
+import scala.collection.mutable
 import scala.runtime.eval.EvalContext
 
 /** Configuration for one compile-and-run of an eval body through the eval
@@ -26,6 +27,8 @@ private[repl] case class EvalCompilerConfig(
      *  non-empty, [[SpliceEvalBody]] activates nested mode so each inner eval
      *  gets a composed `enclosingSource` chained off this one. */
     outerEnclosingSource: String = "",
+    sessionLine: Boolean = false,
+    sessionValNames: mutable.ListBuffer[String] = mutable.ListBuffer.empty[String],
     evalLogDir: String = "",
     evalLogTimestamp: String = ""
 ):

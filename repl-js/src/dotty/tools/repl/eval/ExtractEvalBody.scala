@@ -12,11 +12,15 @@ import dotty.tools.dotc.core.Names.*
 import dotty.tools.dotc.core.SymDenotations.SymDenotation
 import dotty.tools.dotc.core.Symbols.*
 import dotty.tools.dotc.core.Types.*
+import dotty.tools.dotc.core.StdNames.nme
+import dotty.tools.dotc.core.NameOps.*
 import dotty.tools.dotc.core.DenotTransformers.DenotTransformer
 import dotty.tools.dotc.core.Phases.*
 import dotty.tools.dotc.report
 import dotty.tools.dotc.transform.MacroTransform
 import dotty.tools.dotc.util.SrcPos
+
+import scala.collection.mutable
 
 /** Post-typer phase that pulls the typed eval body out of its splice point and
  *  into the synthesised `__Expression.evaluate` method.
@@ -37,11 +41,26 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
   extends MacroTransform with DenotTransformer:
 
   override def phaseName: String = ExtractEvalBody.name
+  override def changesMembers: Boolean = config.sessionLine
+
+  /** Symbols of a session line's top-level definitions, lifted to public members
+   *  of the line's `__EvalExpression` so the next line can `import __lineK.*`.
+   *  Their re-owning, flag fix-up and (for `var`s) setter synthesis happen
+   *  imperatively in [[ExtractEvalBodyTransformer.installSessionMembers]] — the
+   *  one place that owns this transformation. */
+  private val sessionMemberSymbols = mutable.Set.empty[Symbol]
+  /** Symbols nested inside the line's trailing expression, re-owned to `evaluate`. */
+  private val sessionEvalLocalSymbols = mutable.Set.empty[Symbol]
+  /** Flags a lifted local definition must shed to become a normal public member. */
+  private val sessionMemberMask: FlagSet = Private | PrivateLocal | Local | NonMember
 
   override def transformPhase(using Context): Phase = this.next
 
   override def transform(ref: SingleDenotation)(using Context): SingleDenotation =
     ref match
+      case ref: SymDenotation if config.sessionLine && sessionEvalLocalSymbols.contains(ref.symbol) =>
+        ref.copySymDenotation(owner = config.evaluateMethod)
+
       case ref: SymDenotation if isExpressionVal(ref.symbol.maybeOwner) =>
         ref.copySymDenotation(owner = config.evaluateMethod)
       case _ => ref
@@ -66,6 +85,8 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
 
   private class ExtractEvalBodyTransformer extends Transformer:
     private var bodyTree: Tree | Null = null
+    private var sessionMembers: List[Tree] = Nil
+    private var sessionEvalBody: Tree | Null = null
 
     override def transform(tree: Tree)(using Context): Tree =
       tree match
@@ -90,20 +111,162 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
         case tree: ValDef if isExpressionVal(tree.symbol) =>
           bodyTree = tree.rhs
           store.store(tree.symbol)
+          if config.sessionLine then
+            val split = splitSessionBody(tree.rhs)
+            sessionMembers = split.members
+            sessionEvalBody = split.evalBody
+            sessionMemberSymbols.clear()
+            sessionEvalLocalSymbols.clear()
+            sessionMemberSymbols ++= split.members.collect {
+              case vd: ValDef => vd.symbol
+              case dd: DefDef => dd.symbol
+            }
+            config.sessionValNames ++= split.members.collect {
+              case vd: ValDef
+                  if !vd.symbol.is(Given)
+                  && vd.name.toString.nonEmpty =>
+                vd.name.toString
+            }
+            collectSessionEvalLocalSymbols(split.evalBody)
           val defaultRhs = Literal(Constant(null)).cast(tree.tpt.tpe).withSpan(tree.rhs.span)
           cpy.ValDef(tree)(rhs = defaultRhs)
 
         case tree: DefDef if tree.symbol == config.evaluateMethod =>
-          val captured = bodyTree
+          val captured = if config.sessionLine then sessionEvalBody else bodyTree
           if captured == null then tree
-          else cpy.DefDef(tree)(rhs = ExtractTransformer.transform(captured))
+          else
+            if config.sessionLine then installSessionEvalLocalDenots()
+            val rhs = ExtractTransformer.transform(captured)
+            cpy.DefDef(tree)(rhs = rhs)
+
+        case tree: TypeDef if config.sessionLine && tree.symbol == config.expressionClass =>
+          addSessionMembers(super.transform(tree).asInstanceOf[TypeDef])
 
         case _ => super.transform(tree)
+
+    private case class SessionSplit(members: List[Tree], evalBody: Tree)
+
+    private def splitSessionBody(tree: Tree)(using Context): SessionSplit =
+      tree match
+        case Block(stats, expr) =>
+          val members = mutable.ListBuffer.empty[Tree]
+          val evalStats = mutable.ListBuffer.empty[Tree]
+          stats.foreach {
+            case stat if isLiftableSessionMember(stat) => members += stat
+            case stat: Import if config.sessionLine && isPriorLineImport(stat) =>
+            case stat                                  => evalStats += stat
+          }
+          val evalBody =
+            if evalStats.isEmpty then expr
+            else cpy.Block(tree)(evalStats.toList, expr)
+          SessionSplit(members.toList, evalBody)
+        case _ =>
+          SessionSplit(Nil, tree)
+
+    private def isLiftableSessionMember(tree: Tree)(using Context): Boolean =
+      tree match
+        case vd: ValDef =>
+          vd.symbol.exists && !vd.symbol.is(Synthetic) && !vd.name.isEmpty
+        case dd: DefDef =>
+          dd.symbol.exists && !dd.symbol.is(Synthetic) &&
+            dd.name != nme.CONSTRUCTOR && !dd.name.isEmpty
+        case _ => false
+
+    private def isPriorLineImport(tree: Import)(using Context): Boolean =
+      tree.expr match
+        case Ident(name) => name.toString.startsWith("__line")
+        case _ => false
+
+    private def collectSessionEvalLocalSymbols(tree: Tree)(using Context): Unit =
+      object LocalSymbolTraverser extends TreeTraverser:
+        override def traverse(tree: Tree)(using Context): Unit =
+          tree match
+            case member: MemberDef
+                if member.symbol.exists
+                && !sessionMemberSymbols.contains(member.symbol) =>
+              sessionEvalLocalSymbols += member.symbol
+              traverseChildren(tree)
+            case _ =>
+              traverseChildren(tree)
+      LocalSymbolTraverser.traverse(tree)
+
+    /** Setters synthesised for lifted `var` members (see [[installSessionMembers]]).
+     *  Held so [[addSessionMembers]] can emit their `def x_=(v) = ()` trees right
+     *  after entering the symbols. */
+    private var sessionSetterSyms: List[TermSymbol] = Nil
+
+    /** Re-own each lifted definition to the `__EvalExpression` class as a normal
+     *  public member, entering it into the class scope. For `var`s, also
+     *  synthesise the setter that `Desugar` would have created for a class-level
+     *  `var` (a local `var` never gets one) — without it the later `getters`
+     *  phase tries to enter the setter itself, where `changesMembers` is off.
+     *
+     *  This is the single source of truth for the lift: re-owning, flag fix-up
+     *  and setter creation all happen here (the `getters`/`memoize` phases then
+     *  treat the members exactly like source-declared `val`/`var`/`def`s, so a
+     *  lifted `val` keeps its compute-once-at-construction semantics). */
+    private def installSessionMembers()(using Context): Unit =
+      val setters = mutable.ListBuffer.empty[TermSymbol]
+      sessionMembers.foreach {
+        case member: MemberDef =>
+          val sym = member.symbol
+          sym.copySymDenotation(
+            owner = config.expressionClass,
+            initFlags = sym.flags &~ sessionMemberMask
+          ).installAfter(ExtractEvalBody.this)
+          sym.enteredAfter(ExtractEvalBody.this)
+          if sym.is(Mutable) then
+            val setter = makeSessionSetter(sym.asTerm)
+            setter.enteredAfter(ExtractEvalBody.this)
+            setters += setter
+        case _ =>
+      }
+      sessionSetterSyms = setters.toList
+
+    /** The public setter for a lifted `var`, mirroring `Desugar.valDef`. Its `()`
+     *  body is filled in with the field write by the `memoize` phase. */
+    private def makeSessionSetter(valSym: TermSymbol)(using Context): TermSymbol =
+      newSymbol(
+        config.expressionClass,
+        valSym.name.setterName,
+        Method | Accessor,
+        MethodType(termName("x$1") :: Nil, valSym.info.widenExpr :: Nil, defn.UnitType)
+      )
+
+    private def installSessionEvalLocalDenots()(using Context): Unit =
+      sessionEvalLocalSymbols.foreach { sym =>
+        sym.copySymDenotation(owner = config.evaluateMethod)
+          .installAfter(ExtractEvalBody.this)
+      }
+
+    private def addSessionMembers(tree: TypeDef)(using Context): TypeDef =
+      if sessionMembers.isEmpty then tree
+      else
+        tree.rhs match
+          case impl: Template =>
+            installSessionMembers()
+            val lifted = sessionMembers.map(ExtractTransformer.transform)
+            val setterDefs = sessionSetterSyms.map(s => DefDef(s, unitLiteral).withSpan(tree.span))
+            val body = impl.body.flatMap {
+              case dd: DefDef if dd.symbol == config.evaluateMethod => (lifted ++ setterDefs) :+ dd
+              case stat                                             => stat :: Nil
+            }
+            cpy.TypeDef(tree)(rhs = cpy.Template(impl)(body = body))
+          case _ => tree
   end ExtractEvalBodyTransformer
 
   private object ExtractTransformer extends TreeMap:
     override def transform(tree: Tree)(using Context): Tree = tree match
       case _: ImportOrExport => tree
+
+      // A same-line reference to a definition we are lifting to a class member:
+      // qualify it as `this.<member>` (the body and the members were typed as
+      // siblings in a block, so such references arrive as bare `Ident`s). Works
+      // for `val`/`var` (field read) and parameterless `def`/`given` alike.
+      case tree: Ident
+          if config.sessionLine
+          && sessionMemberSymbols.contains(tree.symbol) =>
+        This(config.expressionClass).select(tree.symbol).withSpan(tree.span)
 
       case tree: This =>
         val cls = tree.symbol

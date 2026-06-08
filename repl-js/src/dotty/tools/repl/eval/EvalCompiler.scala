@@ -35,4 +35,8 @@ class EvalCompiler(config: EvalCompilerConfig) extends Compiler:
     val anchor = if ccIndex >= 0 then ccIndex else 0
     val (before, after) = transformPhases.splitAt(anchor + 1)
     val resolveGroup = List(ResolveEvalAccess(config, store))
-    (before :+ List(ExtractEvalBody(config, store))) ++ (after :+ resolveGroup)
+    val extractGroup = List(ExtractEvalBody(config, store))
+    val postExtractGroups =
+      if config.sessionLine then List(List(new WriteReplTasty))
+      else Nil
+    (before :+ extractGroup) ++ postExtractGroups ++ (after :+ resolveGroup)

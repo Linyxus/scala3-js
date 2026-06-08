@@ -60,10 +60,17 @@ object EvalSupport:
 
   /** Instantiate `expressionClassName(bindings)` and invoke `evaluate()`. */
   def instantiateAndRun(interp: Interpreter, expressionClassName: String, bindings: Any): Any =
+    val (_, value) = instantiateAndKeep(interp, expressionClassName, bindings)
+    value
+
+  /** Instantiate `expressionClassName(bindings)`, invoke `evaluate()`, and return
+   *  both the retained instance and the result. */
+  def instantiateAndKeep(interp: Interpreter, expressionClassName: String, bindings: Any): (Any, Any) =
     given Position = Position.NoPosition
     val ci = interp.getClassInfo(Names.ClassName(expressionClassName))
     val ctor = ci.lookupSingleConstructor()
     val instance = interp.executor.newInstanceWithConstructor(
       ctor, List(bindings.asInstanceOf[Value]))
     val evalM = ci.lookupPublicMethod(EvaluateMethodName)
-    interp.executor.applyMethodDefGeneric(evalM, Some(instance), Nil)
+    val value = interp.executor.applyMethodDefGeneric(evalM, Some(instance), Nil)
+    (instance, value)

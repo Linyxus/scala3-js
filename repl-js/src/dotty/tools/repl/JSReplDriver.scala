@@ -166,7 +166,9 @@ class JSReplDriver(
 
     compiler.compile(parsed).fold(
       { case (errs, newState) =>
-        val next = displayErrors(errs, newState)
+        val failedState =
+          newState.copy(invalidObjectIndexes = newState.invalidObjectIndexes + newState.objectIndex)
+        val next = displayErrors(errs, failedState)
         Future.successful(failure(next, diagnosticsMessage(errs)))
       },
       { case (unit, newState) =>
@@ -487,6 +489,35 @@ class JSReplDriver(
       case Left((errors, source)) =>
         js.Dynamic.literal(ok = false, errors = js.Array(errors*), source = source)
 
+  def evalSessionLineJS(
+      code: js.Any,
+      bindings: js.Any,
+      expectedType: js.Any,
+      enclosingSource: js.Any,
+      priorNames: js.Any,
+      priorClasses: js.Any,
+      priorValNames: js.Any
+  ): js.Any =
+    evalSessionLine(
+      code.asInstanceOf[String],
+      bindings,
+      expectedType.asInstanceOf[String],
+      enclosingSource.asInstanceOf[String],
+      priorNames.asInstanceOf[js.Array[String]].toList,
+      priorClasses.asInstanceOf[js.Array[String]].toList,
+      priorValNames.asInstanceOf[js.Array[js.Array[String]]].toList.map(_.toList)
+    ) match
+      case Right((value, instance, className, valNames)) =>
+        js.Dynamic.literal(
+          ok = true,
+          value = value.asInstanceOf[js.Any],
+          instance = instance.asInstanceOf[js.Any],
+          className = className,
+          valNames = js.Array(valNames*)
+        )
+      case Left((errors, source)) =>
+        js.Dynamic.literal(ok = false, errors = js.Array(errors*), source = source)
+
   private def evalDynamic(
       code: String, bindings: Any, expectedType: String, enclosingSource: String
   ): Either[(Array[String], String), Any] =
@@ -507,7 +538,7 @@ class JSReplDriver(
     val uuid = nextEvalId()
     val outputClassName = str.REPL_SESSION_LINE + uuid + "$__EvalExpression"
     val wrapperName     = str.REPL_SESSION_LINE + uuid + "$__EvalWrapper"
-    val evalImport = "import scala.runtime.eval.Eval.{eval, evalSafe}\n"
+    val evalImport = "import scala.runtime.eval.Eval.{eval, evalSafe, evalLoop}\n"
     val importBlock = if imports.isEmpty then evalImport else evalImport + imports.mkString("", "\n", "\n")
     val wrappedSource = s"${importBlock}object $wrapperName {\n$enclosingSource\n}\n"
 
@@ -529,6 +560,42 @@ class JSReplDriver(
         val v = runner.instantiateEval(outputClassName, bindings)
         if key != null then evalCache.put(key, Right(outputClassName))
         Right(v)
+
+  private def evalSessionLine(
+      code: String,
+      bindings: Any,
+      expectedType: String,
+      enclosingSource: String,
+      priorNames: List[String],
+      priorClasses: List[String],
+      priorValNames: List[List[String]]
+  ): Either[(Array[String], String), (Any, Any, String, Array[String])] =
+    val state = currentState
+    if state == null then return Left((Array("evalLoop: no active REPL state"), ""))
+
+    val uuid = nextEvalId()
+    val outputClassName = str.REPL_SESSION_LINE + uuid + "$__EvalExpression"
+    val wrapperName     = str.REPL_SESSION_LINE + uuid + "$__EvalWrapper"
+    val imports = buildEvalImports(state)
+    val evalImport = "import scala.runtime.eval.Eval.{eval, evalSafe, evalLoop}\n"
+    val importBlock = if imports.isEmpty then evalImport else evalImport + imports.mkString("", "\n", "\n")
+    val sessionEnclosingSource = injectPriorLineImports(enclosingSource, priorNames, priorClasses, priorValNames)
+    val wrappedSource = s"${importBlock}object $wrapperName {\n$sessionEnclosingSource\n}\n"
+
+    val config = eval.EvalCompilerConfig(
+      outputClassName = outputClassName,
+      body = code,
+      expectedType = expectedType,
+      outerEnclosingSource = sessionEnclosingSource,
+      sessionLine = true
+    )
+    evalCompile(wrappedSource, sessionDir, config) match
+      case Left(errors) =>
+        Left((errors.toArray, spliceBodyForDisplay(wrappedSource, code)))
+      case Right(()) =>
+        runner.registerEvalClasses(collectSjsir(sessionDir))
+        val (instance, value) = runner.instantiateEvalAndKeep(outputClassName, bindings)
+        Right((value, instance, outputClassName, config.sessionValNames.distinct.toArray))
 
   /** Compile one eval wrapper source through [[eval.EvalCompiler]], writing
    *  `.sjsir` into `outDir`. Reuses the session's `rootCtx` (same classpath +
@@ -579,6 +646,23 @@ class JSReplDriver(
       // prepends it explicitly. Avoids N duplicate import lines in the wrapper.
       .filterNot(_.contains("scala.runtime.eval.Eval"))
       .distinct
+
+  private def injectPriorLineImports(
+      enclosingSource: String,
+      priorNames: List[String],
+      priorClasses: List[String],
+      priorValNames: List[List[String]]
+  ): String =
+    if enclosingSource.isEmpty || priorNames.isEmpty then enclosingSource
+    else
+      val marker = scala.runtime.eval.EvalContext.placeholder
+      val priorLines = priorNames.lazyZip(priorClasses).lazyZip(priorValNames).toList
+      val preamble = priorLines.map { case (name, cls, valNames) =>
+        val aliases = valNames.distinct.map(v => s"val $v = $name.$v").mkString("\n")
+        val aliasBlock = if aliases.isEmpty then "" else aliases + "\n"
+        s"val $name: $cls = scala.runtime.eval.Eval.sessionPlaceholder[$cls]\nimport $name.{given, *}\n$aliasBlock"
+      }.mkString
+      enclosingSource.replace(marker, s"{\n$preamble$marker\n}")
 
   /** Replace the first marker in the wrapper source with the body, so compile
    *  errors show the actual code rather than the placeholder. */
