@@ -120,13 +120,16 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
             sessionMemberSymbols ++= split.members.collect {
               case vd: ValDef => vd.symbol
               case dd: DefDef => dd.symbol
+              case td: TypeDef => td.symbol
             }
             config.sessionValNames ++= split.members.collect {
               case vd: ValDef
                   if !vd.symbol.is(Given)
+                  && !isPriorLineName(vd.name)
                   && vd.name.toString.nonEmpty =>
                 vd.name.toString
             }
+            config.sessionImportStrings ++= split.imports
             collectSessionEvalLocalSymbols(split.evalBody)
           val defaultRhs = Literal(Constant(null)).cast(tree.tpt.tpe).withSpan(tree.rhs.span)
           cpy.ValDef(tree)(rhs = defaultRhs)
@@ -144,38 +147,53 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
 
         case _ => super.transform(tree)
 
-    private case class SessionSplit(members: List[Tree], evalBody: Tree)
+    private case class SessionSplit(
+        members: List[Tree],
+        imports: List[String],
+        evalBody: Tree
+    )
 
     private def splitSessionBody(tree: Tree)(using Context): SessionSplit =
       tree match
         case Block(stats, expr) =>
           val members = mutable.ListBuffer.empty[Tree]
+          val imports = mutable.ListBuffer.empty[String]
           val evalStats = mutable.ListBuffer.empty[Tree]
+          val printCtx = ctx.fresh.setSetting(ctx.settings.color, "never")
           stats.foreach {
             case stat if isLiftableSessionMember(stat) => members += stat
             case stat: Import if config.sessionLine && isPriorLineImport(stat) =>
-            case stat                                  => evalStats += stat
+            case stat: Import =>
+              imports += stat.show(using printCtx)
+              evalStats += stat
+            case stat => evalStats += stat
           }
           val evalBody =
             if evalStats.isEmpty then expr
             else cpy.Block(tree)(evalStats.toList, expr)
-          SessionSplit(members.toList, evalBody)
+          SessionSplit(members.toList, imports.toList, evalBody)
         case _ =>
-          SessionSplit(Nil, tree)
+          SessionSplit(Nil, Nil, tree)
 
     private def isLiftableSessionMember(tree: Tree)(using Context): Boolean =
       tree match
         case vd: ValDef =>
-          vd.symbol.exists && !vd.symbol.is(Synthetic) && !vd.name.isEmpty
+          vd.symbol.exists && (!vd.symbol.is(Synthetic) || vd.symbol.is(Module)) && !vd.name.isEmpty
         case dd: DefDef =>
           dd.symbol.exists && !dd.symbol.is(Synthetic) &&
+            !dd.symbol.is(Extension) && !dd.symbol.is(ExtensionMethod) &&
             dd.name != nme.CONSTRUCTOR && !dd.name.isEmpty
+        case td: TypeDef =>
+          td.symbol.exists && !td.name.isEmpty
         case _ => false
 
     private def isPriorLineImport(tree: Import)(using Context): Boolean =
       tree.expr match
         case Ident(name) => name.toString.startsWith("__line")
         case _ => false
+
+    private def isPriorLineName(name: Name): Boolean =
+      name.toString.startsWith("__line")
 
     private def collectSessionEvalLocalSymbols(tree: Tree)(using Context): Unit =
       object LocalSymbolTraverser extends TreeTraverser:
@@ -207,21 +225,49 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
      *  lifted `val` keeps its compute-once-at-construction semantics). */
     private def installSessionMembers()(using Context): Unit =
       val setters = mutable.ListBuffer.empty[TermSymbol]
-      sessionMembers.foreach {
-        case member: MemberDef =>
-          val sym = member.symbol
-          sym.copySymDenotation(
-            owner = config.expressionClass,
-            initFlags = sym.flags &~ sessionMemberMask
-          ).installAfter(ExtractEvalBody.this)
+      val memberDefs = sessionMembers.collect { case member: MemberDef => member }
+      memberDefs.foreach { member =>
+        val sym = member.symbol
+        sym.copySymDenotation(
+          owner = config.expressionClass,
+          initFlags = sym.flags &~ sessionMemberMask,
+          info = liftedMemberInfo(sym)
+        ).installAfter(ExtractEvalBody.this)
+      }
+      memberDefs.foreach { member =>
+        val sym = member.symbol
+        if !isModuleClassWhoseSourceModuleIsLifted(sym) then
           sym.enteredAfter(ExtractEvalBody.this)
-          if sym.is(Mutable) then
-            val setter = makeSessionSetter(sym.asTerm)
-            setter.enteredAfter(ExtractEvalBody.this)
-            setters += setter
-        case _ =>
+        if sym.is(Mutable) then
+          val setter = makeSessionSetter(sym.asTerm)
+          setter.enteredAfter(ExtractEvalBody.this)
+          setters += setter
       }
       sessionSetterSyms = setters.toList
+
+    private def isModuleClassWhoseSourceModuleIsLifted(sym: Symbol)(using Context): Boolean =
+      sym.is(ModuleClass) && sym.sourceModule.exists && sessionMemberSymbols.contains(sym.sourceModule)
+
+    private def liftedMemberInfo(sym: Symbol)(using Context): Type | Null =
+      if sym.is(ModuleVal) then
+        val moduleClass = sym.moduleClass
+        if moduleClass.exists then TypeRef(config.expressionClass.thisType, moduleClass) else null
+      else if sym.isClass then
+        sym.info match
+          case info: ClassInfo =>
+            val selfInfo =
+              if sym.is(ModuleClass) && sym.sourceModule.exists then
+                TermRef(config.expressionClass.thisType, sym.sourceModule)
+              else info.selfInfo
+            ClassInfo(
+              config.expressionClass.thisType,
+              sym.asClass,
+              info.declaredParents,
+              info.decls,
+              selfInfo
+            )
+          case _ => null
+      else null
 
     /** The public setter for a lifted `var`, mirroring `Desugar.valDef`. Its `()`
      *  body is filled in with the field write by the `memoize` phase. */
@@ -259,6 +305,16 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
     override def transform(tree: Tree)(using Context): Tree = tree match
       case _: ImportOrExport => tree
 
+      // Prior session-line instances are injected as typing placeholders.
+      // Lift them as real expression members, but initialize them from the
+      // captured bindings (`__lineK`) so path-dependent types in TASTY have a
+      // stable owner and the placeholder body never executes.
+      case tree: ValDef
+          if config.sessionLine
+          && tree.name.toString.startsWith("__line")
+          && tree.symbol.exists =>
+        cpy.ValDef(tree)(rhs = getLocalValue(tree.rhs, tree.symbol.asTerm))
+
       // A same-line reference to a definition we are lifting to a class member:
       // qualify it as `this.<member>` (the body and the members were typed as
       // siblings in a block, so such references arrive as bare `Ident`s). Works
@@ -271,6 +327,8 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
       case tree: This =>
         val cls = tree.symbol
         if cls == config.expressionClass then super.transform(tree)
+        else if config.sessionLine && isOwnedBySessionMember(cls) then
+          super.transform(tree)
         else if cls.is(ModuleClass) && isGloballyAccessible(cls) then
           super.transform(tree)
         else if cls.isClass && store.classOwners.contains(cls) then
@@ -435,6 +493,9 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
 
     private def isTermOwnedModule(sym: Symbol)(using Context): Boolean =
       sym.exists && sym.is(Module) && isTermOwnedSymbol(sym)
+
+    private def isOwnedBySessionMember(sym: Symbol)(using Context): Boolean =
+      sym.exists && sym.ownersIterator.exists(sessionMemberSymbols.contains)
 
     private def isOuterMethodLocalDef(sym: Symbol)(using Context): Boolean =
       sym.exists && sym.is(Method) && !sym.isClassConstructor &&

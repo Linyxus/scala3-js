@@ -13,6 +13,7 @@ final class EvalSession[R] private[eval] (
   private var env: Array[Eval.Binding] = Array.empty[Eval.Binding]
   private var envClasses: List[String] = Nil
   private var envValNames: List[Array[String]] = Nil
+  private var envImports: List[Array[String]] = Nil
   private val loopState = new LoopState
 
   /** Context for the loop as a whole: the `evalLoop(...)` call site's surrounding
@@ -55,13 +56,15 @@ final class EvalSession[R] private[eval] (
       enclosingSource,
       env.map(_.name),
       envClasses.toArray,
-      shadowingAliases(bindings.iterator.map(_.name).toSet)
+      shadowingAliases(bindings.iterator.map(_.name).toSet),
+      envImports.toArray
     ) match
-      case Right((value, instance, className, valNames)) =>
+      case Right((value, instance, className, valNames, imports)) =>
         loopState.recordSuccess(code, value)
         env = env :+ Eval.bind("__line" + (env.length + 1), instance)
         envClasses = envClasses :+ className
         envValNames = envValNames :+ valNames
+        envImports = envImports :+ imports
         EvalResult.success(value.asInstanceOf[T])
       case Left(failure) =>
         loopState.recordFailure(code, failure.errors)

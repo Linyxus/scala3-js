@@ -47,9 +47,9 @@ final class ReplSession private (
     ): js.Function4[js.Any, js.Any, js.Any, js.Any, js.Any]
 
   js.Dynamic.global.globalThis.__replEvalSession =
-    ((code: js.Any, bindings: js.Any, expectedType: js.Any, enclosingSource: js.Any, priorNames: js.Any, priorClasses: js.Any, priorValNames: js.Any) =>
-      driver.evalSessionLineJS(code, bindings, expectedType, enclosingSource, priorNames, priorClasses, priorValNames)
-    ): js.Function7[js.Any, js.Any, js.Any, js.Any, js.Any, js.Any, js.Any, js.Any]
+    ((code: js.Any, bindings: js.Any, expectedType: js.Any, enclosingSource: js.Any, priorNames: js.Any, priorClasses: js.Any, priorValNames: js.Any, priorImports: js.Any) =>
+      driver.evalSessionLineJS(code, bindings, expectedType, enclosingSource, priorNames, priorClasses, priorValNames, priorImports)
+    ): js.Function8[js.Any, js.Any, js.Any, js.Any, js.Any, js.Any, js.Any, js.Any, js.Any]
 
   private var state: State = driver.initialState
   private var stateVersion: Int = 0

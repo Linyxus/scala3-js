@@ -26,7 +26,8 @@ object EvalBridge:
       enclosingSource: String,
       priorNames: Array[String],
       priorClasses: Array[String],
-      priorValNames: Array[Array[String]]
-  ): Either[Eval.CompileFailure, (Any, Any, String, Array[String])] =
+      priorValNames: Array[Array[String]],
+      priorImports: Array[Array[String]]
+  ): Either[Eval.CompileFailure, (Any, Any, String, Array[String], Array[String])] =
     throw new IllegalStateException(
       "scala.runtime.eval.EvalSession requires an active Scala.js REPL session")

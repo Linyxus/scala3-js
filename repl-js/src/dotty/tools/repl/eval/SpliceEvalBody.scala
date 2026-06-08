@@ -117,12 +117,18 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
             else stats.collect {
               case vd: ValDef if isPriorLineAlias(vd) && !bodyTermNames(vd.name) => vd
             }
+          val sessionLineValues =
+            if !config.sessionLine then Nil
+            else stats.collect {
+              case vd: ValDef if isPriorLineValue(vd) => vd
+            }
           val sessionImports =
             if !config.sessionLine then Nil
             else stats.collect {
               case imp: Import if isPriorLineImport(imp) => imp
             }
-          val hoistedStats: List[Tree] = givens ++ sessionImports ++ sessionAliases
+          val hoistedStats: List[Tree] =
+            givens ++ sessionLineValues ++ sessionImports ++ sessionAliases
           val markerReplacement = mkExprBlock(effectiveBody, expr, hoistedStats)
           val keptStats = stats.filterNot(s => hoistedStats.exists(_ eq s))
           if keptStats.isEmpty then markerReplacement
@@ -174,6 +180,9 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
     tree.rhs match
       case Select(Ident(name), _) => name.toString.startsWith("__line")
       case _ => false
+
+  private def isPriorLineValue(tree: ValDef): Boolean =
+    tree.name.toString.startsWith("__line")
 
   private def isPriorLineImport(tree: Import): Boolean =
     tree.expr match

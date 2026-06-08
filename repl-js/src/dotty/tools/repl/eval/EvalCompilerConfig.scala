@@ -29,6 +29,7 @@ private[repl] case class EvalCompilerConfig(
     outerEnclosingSource: String = "",
     sessionLine: Boolean = false,
     sessionValNames: mutable.ListBuffer[String] = mutable.ListBuffer.empty[String],
+    sessionImportStrings: mutable.ListBuffer[String] = mutable.ListBuffer.empty[String],
     evalLogDir: String = "",
     evalLogTimestamp: String = ""
 ):

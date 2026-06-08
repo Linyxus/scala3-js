@@ -494,7 +494,8 @@ class JSReplDriver(
       enclosingSource: js.Any,
       priorNames: js.Any,
       priorClasses: js.Any,
-      priorValNames: js.Any
+      priorValNames: js.Any,
+      priorImports: js.Any
   ): js.Any =
     evalSessionLine(
       code.asInstanceOf[String],
@@ -503,15 +504,17 @@ class JSReplDriver(
       enclosingSource.asInstanceOf[String],
       priorNames.asInstanceOf[js.Array[String]].toList,
       priorClasses.asInstanceOf[js.Array[String]].toList,
-      priorValNames.asInstanceOf[js.Array[js.Array[String]]].toList.map(_.toList)
+      priorValNames.asInstanceOf[js.Array[js.Array[String]]].toList.map(_.toList),
+      priorImports.asInstanceOf[js.Array[js.Array[String]]].toList.map(_.toList)
     ) match
-      case Right((value, instance, className, valNames)) =>
+      case Right((value, instance, className, valNames, imports)) =>
         js.Dynamic.literal(
           ok = true,
           value = value.asInstanceOf[js.Any],
           instance = instance.asInstanceOf[js.Any],
           className = className,
-          valNames = js.Array(valNames*)
+          valNames = js.Array(valNames*),
+          imports = js.Array(imports*)
         )
       case Left((errors, source)) =>
         js.Dynamic.literal(ok = false, errors = js.Array(errors*), source = source)
@@ -566,8 +569,9 @@ class JSReplDriver(
       enclosingSource: String,
       priorNames: List[String],
       priorClasses: List[String],
-      priorValNames: List[List[String]]
-  ): Either[(Array[String], String), (Any, Any, String, Array[String])] =
+      priorValNames: List[List[String]],
+      priorImports: List[List[String]]
+  ): Either[(Array[String], String), (Any, Any, String, Array[String], Array[String])] =
     val state = currentState
     if state == null then return Left((Array("evalLoop: no active REPL state"), ""))
 
@@ -577,7 +581,8 @@ class JSReplDriver(
     val imports = buildEvalImports(state)
     val evalImport = "import scala.runtime.eval.Eval.{eval, evalSafe, evalLoop}\n"
     val importBlock = if imports.isEmpty then evalImport else evalImport + imports.mkString("", "\n", "\n")
-    val sessionEnclosingSource = injectPriorLineImports(enclosingSource, priorNames, priorClasses, priorValNames)
+    val sessionEnclosingSource =
+      injectPriorLineImports(enclosingSource, priorNames, priorClasses, priorValNames, priorImports)
     val wrappedSource = s"${importBlock}object $wrapperName {\n$sessionEnclosingSource\n}\n"
 
     val config = eval.EvalCompilerConfig(
@@ -593,7 +598,13 @@ class JSReplDriver(
       case Right(()) =>
         runner.registerEvalClasses(collectSjsir(sessionDir))
         val (instance, value) = runner.instantiateEvalAndKeep(outputClassName, bindings)
-        Right((value, instance, outputClassName, config.sessionValNames.distinct.toArray))
+        Right((
+          value,
+          instance,
+          outputClassName,
+          config.sessionValNames.distinct.toArray,
+          config.sessionImportStrings.distinct.toArray
+        ))
 
   /** Compile one eval wrapper source through [[eval.EvalCompiler]], writing
    *  `.sjsir` into `outDir`. Reuses the session's `rootCtx` (same classpath +
@@ -635,7 +646,9 @@ class JSReplDriver(
   private def buildEvalImports(state: State): List[String] =
     val printCtx = state.context.fresh.setSetting(state.context.settings.color, "never")
     state.validObjectIndexes.flatMap { i =>
-      val wrapperImport = ReplCompiler.objectNames.get(i).map(n => s"import $n.{given, *}")
+      val wrapperImport = ReplCompiler.objectNames.get(i)
+        .filter(hasSessionTasty)
+        .map(n => s"import $n.{given, *}")
       val userImports = state.imports.getOrElse(i, Nil).map(_.show(using printCtx))
       wrapperImport ++ userImports
     }.toList
@@ -645,20 +658,28 @@ class JSReplDriver(
       .filterNot(_.contains("scala.runtime.eval.Eval"))
       .distinct
 
+  private def hasSessionTasty(name: Name): Boolean =
+    val parts = name.mangledString.split('.').toSeq
+    val fileParts = parts.updated(parts.length - 1, parts.last.stripSuffix("$") + ".tasty")
+    sessionDir.lookupPath(fileParts, directory = false) != null
+
   private def injectPriorLineImports(
       enclosingSource: String,
       priorNames: List[String],
       priorClasses: List[String],
-      priorValNames: List[List[String]]
+      priorValNames: List[List[String]],
+      priorImports: List[List[String]]
   ): String =
     if enclosingSource.isEmpty || priorNames.isEmpty then enclosingSource
     else
       val marker = scala.runtime.eval.EvalContext.placeholder
-      val priorLines = priorNames.lazyZip(priorClasses).lazyZip(priorValNames).toList
-      val preamble = priorLines.map { case (name, cls, valNames) =>
+      val priorLines =
+        priorNames.zip(priorClasses).zip(priorValNames).zip(priorImports)
+      val preamble = priorLines.map { case (((name, cls), valNames), importStrings) =>
+        val imports = importStrings.distinct.mkString("", "\n", if importStrings.isEmpty then "" else "\n")
         val aliases = valNames.distinct.map(v => s"val $v = $name.$v").mkString("\n")
         val aliasBlock = if aliases.isEmpty then "" else aliases + "\n"
-        s"val $name: $cls = scala.runtime.eval.Eval.sessionPlaceholder[$cls]\nimport $name.{given, *}\n$aliasBlock"
+        s"${imports}val $name: $cls = scala.runtime.eval.Eval.sessionPlaceholder[$cls]\nimport $name.{given, *}\n$aliasBlock"
       }.mkString
       enclosingSource.replace(marker, s"{\n$preamble$marker\n}")
 

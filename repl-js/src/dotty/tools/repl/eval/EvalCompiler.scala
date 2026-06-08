@@ -37,6 +37,6 @@ class EvalCompiler(config: EvalCompilerConfig) extends Compiler:
     val resolveGroup = List(ResolveEvalAccess(config, store))
     val extractGroup = List(ExtractEvalBody(config, store))
     val postExtractGroups =
-      if config.sessionLine then List(List(new WriteReplTasty))
+      if config.sessionLine then List(List(new WriteReplTasty(outlineUnpicklableBodies = true)))
       else Nil
     (before :+ extractGroup) ++ postExtractGroups ++ (after :+ resolveGroup)

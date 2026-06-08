@@ -234,7 +234,9 @@ class JSReplPhase extends Phase:
  *  position pickling of the REPL's synthetic wrapper trees trips a `-1` in
  *  `PositionPickler` under the interpreter, and positions aren't needed for
  *  symbol resolution. Runs first in `transformPhases` (right after `Pickler`). */
-class WriteReplTasty extends Phase:
+class WriteReplTasty(outlineUnpicklableBodies: Boolean = false) extends Phase:
+  import dotc.ast.tpd
+  import dotc.ast.tpd.TreeOps
   import dotc.core.tasty.{TastyPickler, TreePickler, Attributes, AttributePickler, ScratchData}
   import dotc.config.Feature
   def phaseName: String = "writeReplTasty"
@@ -253,10 +255,22 @@ class WriteReplTasty extends Phase:
       isJava = false,
       isOutline = false
     )
+    // The cross-line tasty is a *resolution header*: the next session line reads
+    // it to resolve the types and signatures of accumulated members, and never to
+    // execute them (execution is the separately-registered `.sjsir`). We pickle it
+    // here, at `cc + 1`, which is past `PatternMatcher` — so synthesised case-class
+    // `equals`/enum `ordinal` (and user `boundary`) carry `Labeled` nodes, which
+    // the `TreePickler` predates and cannot encode (it is normally run pre-pattern-
+    // match by the standard `Pickler`). Because bodies are never needed cross-line,
+    // we pickle a copy in which every method body that contains such a node is
+    // replaced by a typed placeholder of its result type: the signature is exact
+    // and the method stays concrete (so lifted classes remain instantiable), while
+    // the real bodies in `unit.tpdTree` flow on to erasure/GenSJSIR untouched.
+    val treeToPickle = if outlineUnpicklableBodies then OutlineBodies.transform(tree) else tree
     for cls <- unit.pickled.keys do
       val pickler = new TastyPickler(cls, isBestEffortTasty = false)
       val treePkl = new TreePickler(pickler, attributes)
-      treePkl.pickle(tree :: Nil)
+      treePkl.pickle(treeToPickle :: Nil)
       val scratch = new ScratchData
       treePkl.compactify(scratch)
       AttributePickler.pickleAttributes(attributes, pickler, scratch.attributeBuffer)
@@ -268,3 +282,18 @@ class WriteReplTasty extends Phase:
       val f = dir.fileNamed(baseName + ".tasty")
       val os = f.output
       try os.write(bytes) finally os.close()
+
+  /** Replace, for pickling only, each method body that contains a `Labeled` (the
+   *  post-`PatternMatcher` construct `TreePickler` cannot encode) with
+   *  `null.asInstanceOf[result]` — concrete, signature-preserving, never run. */
+  private object OutlineBodies extends tpd.TreeMap:
+    override def transform(tree: tpd.Tree)(using Context): tpd.Tree = tree match
+      case dd: tpd.DefDef if !dd.rhs.isEmpty && containsLabeled(dd.rhs) =>
+        tpd.cpy.DefDef(dd)(rhs = tpd.nullLiteral.cast(dd.symbol.info.finalResultType.widenExpr))
+      case _ => super.transform(tree)
+
+    private def containsLabeled(tree: tpd.Tree)(using Context): Boolean =
+      val acc = new tpd.TreeAccumulator[Boolean]:
+        def apply(found: Boolean, t: tpd.Tree)(using Context): Boolean =
+          found || t.isInstanceOf[tpd.Labeled] || foldOver(found, t)
+      acc(false, tree)

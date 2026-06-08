@@ -195,6 +195,8 @@ class EvalRewriteTyped(maybeConfig: Option[EvalCompilerConfig] = None) extends M
           if kind == EvalKind.NotEval then
             warnIfShadowingEvalName(withChildren)
             withChildren
+          else if maybeConfig.nonEmpty && kind == EvalKind.EvalLoop then
+            withChildren
           else if withChildren.args.length == 1 && kind.isPlain then
             expandOneArgToFourArg(withChildren, kind).getOrElse(withChildren)
           else

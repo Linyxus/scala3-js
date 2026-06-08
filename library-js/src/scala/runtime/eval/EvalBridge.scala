@@ -44,8 +44,9 @@ object EvalBridge:
       enclosingSource: String,
       priorNames: Array[String],
       priorClasses: Array[String],
-      priorValNames: Array[Array[String]]
-  ): Either[Eval.CompileFailure, (Any, Any, String, Array[String])] =
+      priorValNames: Array[Array[String]],
+      priorImports: Array[Array[String]]
+  ): Either[Eval.CompileFailure, (Any, Any, String, Array[String], Array[String])] =
     val fn = js.Dynamic.global.globalThis.__replEvalSession
     if js.isUndefined(fn) then
       throw new IllegalStateException(
@@ -57,14 +58,16 @@ object EvalBridge:
       enclosingSource.asInstanceOf[js.Any],
       js.Array(priorNames*),
       js.Array(priorClasses*),
-      js.Array(priorValNames.map(names => js.Array(names*))*)
+      js.Array(priorValNames.map(names => js.Array(names*))*),
+      js.Array(priorImports.map(imports => js.Array(imports*))*)
     ).asInstanceOf[js.Dynamic]
     if res.ok.asInstanceOf[Boolean] then
       Right((
         res.value.asInstanceOf[Any],
         res.instance.asInstanceOf[Any],
         res.className.asInstanceOf[String],
-        res.valNames.asInstanceOf[js.Array[String]].toArray
+        res.valNames.asInstanceOf[js.Array[String]].toArray,
+        res.imports.asInstanceOf[js.Array[String]].toArray
       ))
     else
       val errors = res.errors.asInstanceOf[js.Array[String]].toArray
