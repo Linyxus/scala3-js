@@ -1,0 +1,7 @@
+# EvalContext exposes loop progress. `attempts` counts the lines run so far.
+>>> {"op":"eval","code":"val r = evalLoop[Int] { (ctx, s) => s.eval(\"1\"); s.eval(\"2\"); s.complete(ctx.attempts) }"}
+~ "ok":true.*val r: Int = 2
+
+# `lastError` is set after a failed line (via evalSafe, which does not throw).
+>>> {"op":"eval","code":"val r2 = evalLoop[Boolean] { (ctx, s) => s.evalSafe[Int](\"1 +\"); s.complete(ctx.lastError.isDefined) }"}
+~ "ok":true.*val r2: Boolean = true

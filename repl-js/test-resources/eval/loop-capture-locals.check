@@ -1,0 +1,11 @@
+# Call-site locals of the body are visible inside eval'd lines (E4).
+>>> {"op":"eval","code":"val r = evalLoop[Int] { (ctx, s) => val k = 9; val v = s.eval[Int](\"k + 1\"); s.complete(v) }"}
+~ "ok":true.*val r: Int = 10
+
+# A call-site local and an accumulated def together.
+>>> {"op":"eval","code":"val r2 = evalLoop[Int] { (ctx, s) => val k = 100; s.eval(\"val x = 5\"); val v = s.eval[Int](\"k + x\"); s.complete(v) }"}
+~ "ok":true.*val r2: Int = 105
+
+# A captured `var` is read at its current value on each line.
+>>> {"op":"eval","code":"val r3 = evalLoop[Int] { (ctx, s) => var k = 1; val a = s.eval[Int](\"k\"); k = 10; val b = s.eval[Int](\"k\"); s.complete(a * 100 + b) }"}
+~ "ok":true.*val r3: Int = 110

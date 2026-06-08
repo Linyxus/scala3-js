@@ -1,0 +1,6 @@
+# A user type defined at the REPL is a valid R.
+>>> {"op":"eval","code":"case class Box(n: Int)"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val bx = evalLoop[Box] { (ctx, s) => s.complete(Box(7)) }"}
+~ "ok":true.*val bx: Box = Box\(7\)

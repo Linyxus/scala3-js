@@ -1,0 +1,3 @@
+# The value computed by a line flows back into the driving Scala body.
+>>> {"op":"eval","code":"val r = evalLoop[Int] { (ctx, s) => val v = s.eval[Int](\"val x = 5; x\"); s.complete(v + 1) }"}
+~ "ok":true.*val r: Int = 6

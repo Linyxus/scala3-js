@@ -1,0 +1,17 @@
+# evalLoop: the body exits only via `s.complete(v)` (a boundary break) and
+# evalLoop returns v. The body has type Nothing.
+>>> {"op":"eval","code":"val a = evalLoop[Int] { (ctx, s) => s.complete(42) }"}
+~ "ok":true.*val a: Int = 42
+
+# Compute in the body, then complete.
+>>> {"op":"eval","code":"val b = evalLoop[Int] { (ctx, s) => val x = 1 + 2; s.complete(x * 10) }"}
+~ "ok":true.*val b: Int = 30
+
+# `complete` is Nothing, so it fits in expression position (the else branch),
+# while the body as a whole still ends in a complete.
+>>> {"op":"eval","code":"val c = evalLoop[Int] { (ctx, s) => val x: Int = if (false) 7 else s.complete(5); s.complete(x) }"}
+~ "ok":true.*val c: Int = 5
+
+# First complete wins; the second is dead code.
+>>> {"op":"eval","code":"val d = evalLoop[Int] { (ctx, s) => s.complete(1); s.complete(2) }"}
+~ "ok":true.*val d: Int = 1

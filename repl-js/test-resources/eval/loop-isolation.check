@@ -1,0 +1,14 @@
+# A loop's accumulated definitions are discarded on completion — they do not
+# leak into the enclosing REPL session.
+>>> {"op":"eval","code":"val r = evalLoop[Int] { (ctx, s) => s.eval(\"val secret = 123\"); s.complete(0) }"}
+~ "ok":true.*val r: Int = 0
+
+>>> {"op":"eval","code":"secret"}
+~ "ok":false
+
+# Two separate evalLoop invocations share no state.
+>>> {"op":"eval","code":"evalLoop[Int] { (ctx, s) => s.eval(\"val only = 1\"); s.complete(0) }"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val r2 = evalLoop[Int] { (ctx, s) => s.complete(s.eval[Int](\"only\")) }"}
+~ "ok":false

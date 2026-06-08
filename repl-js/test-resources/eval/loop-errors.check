@@ -1,0 +1,13 @@
+# A compile error in a line throws EvalCompileException (propagates out of the
+# loop unless caught).
+>>> {"op":"eval","code":"val r = evalLoop[Int] { (ctx, s) => s.eval(\"garbage @@@\"); s.complete(0) }"}
+~ "ok":false
+
+# A runtime exception in a line propagates as that exception.
+>>> {"op":"eval","code":"val r2 = evalLoop[Int] { (ctx, s) => s.eval[Int](\"1 / 0\"); s.complete(0) }"}
+~ "ok":false.*(ArithmeticException|by zero)
+
+# After a failed line the environment is NOT extended: a later line cannot see
+# the half-defined name.
+>>> {"op":"eval","code":"val r3 = evalLoop[Int] { (ctx, s) => s.evalSafe(\"val x = nope\"); s.complete(s.eval[Int](\"x\")) }"}
+~ "ok":false
