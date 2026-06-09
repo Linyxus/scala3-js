@@ -133,7 +133,7 @@ class JSReplPhase extends Phase:
       List(
         ImportSelector(Ident(termName("eval"))),
         ImportSelector(Ident(termName("evalSafe"))),
-        ImportSelector(Ident(termName("evalLoop")))
+        ImportSelector(Ident(termName("embedRepl")))
       )
     ).withSpan(span)
 

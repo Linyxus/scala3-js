@@ -1,0 +1,8 @@
+# An inner embedRepl session's body can complete the OUTER embedRepl session via the captured outer `s`:
+# the Break targets the outer boundary (by label) and unwinds through the inner.
+>>> {"op":"eval","code":"val r = embedRepl[Int] { (ctx, s) => embedRepl[Int] { (c2, s2) => s.complete(99) }; s.complete(-1) }"}
+~ "ok":true.*val r: Int = 99
+
+# Completing the outer from inside the inner discards the inner's pending work.
+>>> {"op":"eval","code":"val r2 = embedRepl[Int] { (ctx, s) => embedRepl[Int] { (c2, s2) => s2.eval(\"val tmp = 1\"); s.complete(7) }; s.complete(-1) }"}
+~ "ok":true.*val r2: Int = 7

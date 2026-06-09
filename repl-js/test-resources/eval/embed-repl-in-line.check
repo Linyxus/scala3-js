@@ -1,0 +1,4 @@
+# An embedRepl can appear inside an s.eval'd line (nested embedded REPL driven by eval'd
+# code rather than the outer body).
+>>> {"op":"eval","code":"val r = embedRepl[Int] { (ctx, s) => val v = s.eval[Int](\"embedRepl[Int] { (c2, s2) => s2.complete(8) }\"); s.complete(v) }"}
+~ "ok":true.*val r: Int = 8

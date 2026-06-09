@@ -50,7 +50,7 @@ object EvalBridge:
     val fn = js.Dynamic.global.globalThis.__replEvalSession
     if js.isUndefined(fn) then
       throw new IllegalStateException(
-        "evalLoop(...) requires an active Scala.js REPL session (no __replEvalSession bridge installed)")
+        "embedRepl(...) requires an active Scala.js REPL session (no __replEvalSession bridge installed)")
     val res = fn(
       code.asInstanceOf[js.Any],
       bindings.asInstanceOf[js.Any],

@@ -25,10 +25,10 @@ import dotc.util.Spans.{NoSpan, Span}
 import scala.runtime.eval.EvalContext
 
 /** Post-PostTyper phase that fills the `bindings`, `expectedType`, and
- *  `enclosingSource` arguments of every `eval[T]` / `evalSafe[T]` / `evalLoop[R]`
- *  / `agent[T]` / `agentSafe[T]` call. This is *the* eval rewriter. (`evalLoop`
+ *  `enclosingSource` arguments of every `eval[T]` / `evalSafe[T]` / `embedRepl[R]`
+ *  / `agent[T]` / `agentSafe[T]` call. This is *the* eval rewriter. (`embedRepl`
  *  has no body string of its own; the slots back its `EvalSession`'s
- *  `EvalContext` so the loop body can read the call site's surrounding source.)
+ *  `EvalContext` so the embedded REPL body can read the call site's surrounding source.)
  *
  *  Runs after PostTyper so the typed tree carries resolved symbols (eval is
  *  matched by `sym.owner == Eval.moduleClass`, never by name), captured locals
@@ -64,7 +64,7 @@ class EvalRewriteTyped(maybeConfig: Option[EvalCompilerConfig] = None) extends M
     case Unknown, Definition, Expression
 
   private enum EvalKind:
-    case NotEval, PlainEval, PlainEvalSafe, EvalLike, EvalSafeLike, EvalLoop
+    case NotEval, PlainEval, PlainEvalSafe, EvalLike, EvalSafeLike, EmbedRepl
 
     def isPlain: Boolean = this match
       case PlainEval | PlainEvalSafe => true
@@ -195,7 +195,7 @@ class EvalRewriteTyped(maybeConfig: Option[EvalCompilerConfig] = None) extends M
           if kind == EvalKind.NotEval then
             warnIfShadowingEvalName(withChildren)
             withChildren
-          else if maybeConfig.nonEmpty && kind == EvalKind.EvalLoop then
+          else if maybeConfig.nonEmpty && kind == EvalKind.EmbedRepl then
             withChildren
           else if withChildren.args.length == 1 && kind.isPlain then
             expandOneArgToFourArg(withChildren, kind).getOrElse(withChildren)
@@ -236,7 +236,7 @@ class EvalRewriteTyped(maybeConfig: Option[EvalCompilerConfig] = None) extends M
           sym.name.toString match
             case "eval" => EvalKind.PlainEval
             case "evalSafe" => EvalKind.PlainEvalSafe
-            case "evalLoop" => EvalKind.EvalLoop
+            case "embedRepl" => EvalKind.EmbedRepl
             case _ => EvalKind.NotEval
         else if sym.hasAnnotation(EvalRewriteTyped.evalLikeAnnotClass) then
           EvalKind.EvalLike

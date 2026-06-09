@@ -1,3 +1,0 @@
-# An enum defined in one line is usable later.
->>> {"op":"eval","code":"val r = evalLoop[String] { (ctx, s) => s.eval(\"enum Color { case Red, Green, Blue }\"); val v = s.eval[String](\"Color.Green.toString\"); s.complete(v) }"}
-~ "ok":true.*Green

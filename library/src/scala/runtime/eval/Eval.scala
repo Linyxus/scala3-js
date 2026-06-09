@@ -131,17 +131,17 @@ object Eval:
 
   // --- public entry points ---------------------------------------------------
 
-  /** Open a stateful dynamic-eval loop. The loop body must exit through
+  /** Open a stateful embedded REPL session. The body must exit through
    *  `session.complete(value)`, which breaks to this boundary and returns `value`.
    *
-   *  Like the `eval[T](gen)` generator form, the loop's [[EvalContext]] is given
-   *  the call site's surrounding source and captured locals: the rewriter
+   *  Like the `eval[T](gen)` generator form, the session's [[EvalContext]] is
+   *  given the call site's surrounding source and captured locals: the rewriter
    *  (`EvalRewriteTyped`) fills `bindings` and `enclosingSource` from the
-   *  `evalLoop(...)` call site, and they back `session.ctx` so the body can read
+   *  `embedRepl(...)` call site, and they back `session.ctx` so the body can read
    *  `ctx.enclosingSource` / `ctx.bindings`. `expectedType` (the rendered `R`) is
    *  filled for symmetry with the eval surface; direct callers leave all three at
    *  their defaults. */
-  def evalLoop[R](
+  def embedRepl[R](
       body: (EvalContext, EvalSession[R]) => Nothing,
       bindings: Array[Binding] = Array.empty[Binding],
       expectedType: String = "",

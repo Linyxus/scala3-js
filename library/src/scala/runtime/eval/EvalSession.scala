@@ -3,7 +3,7 @@ package scala.runtime.eval
 import scala.language.experimental.captureChecking
 import scala.util.boundary
 
-/** Stateful dynamic-eval session used by [[Eval.evalLoop]]. */
+/** Stateful dynamic-eval session used by [[Eval.embedRepl]]. */
 @caps.assumeSafe
 final class EvalSession[R] private[eval] (
     label: boundary.Label[R],
@@ -14,13 +14,13 @@ final class EvalSession[R] private[eval] (
   private var envClasses: List[String] = Nil
   private var envValNames: List[Array[String]] = Nil
   private var envImports: List[Array[String]] = Nil
-  private val loopState = new LoopState
+  private val embedReplState = new EmbedReplState
 
-  /** Context for the loop as a whole: the `evalLoop(...)` call site's surrounding
-   *  source and captured locals (filled by the rewriter), plus the live
-   *  [[LoopState]] backing `attempts`/`history`/`lastError`. Each `s.eval` line
+  /** Context for the embedded REPL session as a whole: the `embedRepl(...)` call
+   *  site's surrounding source and captured locals (filled by the rewriter), plus the live
+   *  [[EmbedReplState]] backing `attempts`/`history`/`lastError`. Each `s.eval` line
    *  separately captures its own call-site context. */
-  val ctx: EvalContext = new EvalContext(ctxEnclosingSource, ctxBindings, loopState)
+  val ctx: EvalContext = new EvalContext(ctxEnclosingSource, ctxBindings, embedReplState)
 
   def complete(v: R): Nothing =
     boundary.break(v)(using label)
@@ -60,14 +60,14 @@ final class EvalSession[R] private[eval] (
       envImports.toArray
     ) match
       case Right((value, instance, className, valNames, imports)) =>
-        loopState.recordSuccess(code, value)
+        embedReplState.recordSuccess(code, value)
         env = env :+ Eval.bind("__line" + (env.length + 1), instance)
         envClasses = envClasses :+ className
         envValNames = envValNames :+ valNames
         envImports = envImports :+ imports
         EvalResult.success(value.asInstanceOf[T])
       case Left(failure) =>
-        loopState.recordFailure(code, failure.errors)
+        embedReplState.recordFailure(code, failure.errors)
         EvalResult.failure(failure)
 
   /** Per prior line (parallel to `env`), the accumulated `val` names that line

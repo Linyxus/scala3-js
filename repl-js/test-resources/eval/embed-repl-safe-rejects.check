@@ -1,0 +1,7 @@
+# Under safe mode, each line's body is still safe-checked: an unsafe escape
+# hatch in eval'd code is rejected (the safe import propagates into the line).
+>>> {"op":"eval","code":"import language.experimental.safe"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val r = embedRepl[String] { (ctx, s) => val v = s.eval[String](\"(1: Any).asInstanceOf[String]\"); s.complete(v) }"}
+~ "ok":false.*(asInstanceOf|rejectSafe|safe)

@@ -1,0 +1,7 @@
+# A `var` defined in one line, mutated in a later line, reflects the new value.
+>>> {"op":"eval","code":"val r = embedRepl[Int] { (ctx, s) => s.eval(\"var c = 0\"); s.eval(\"c = c + 5\"); val v = s.eval[Int](\"c\"); s.complete(v) }"}
+~ "ok":true.*val r: Int = 5
+
+# Several mutations across lines.
+>>> {"op":"eval","code":"val r2 = embedRepl[Int] { (ctx, s) => s.eval(\"var c = 1\"); s.eval(\"c = c * 10\"); s.eval(\"c = c + 2\"); val v = s.eval[Int](\"c\"); s.complete(v) }"}
+~ "ok":true.*val r2: Int = 12

@@ -1,0 +1,11 @@
+# complete's argument must conform to R.
+>>> {"op":"eval","code":"embedRepl[Int] { (ctx, s) => s.complete(\"not an int\") }"}
+~ "ok":false
+
+# The body must have type Nothing — it cannot fall through without completing.
+>>> {"op":"eval","code":"embedRepl[Int] { (ctx, s) => val x = 1 }"}
+~ "ok":false
+
+# An empty line is a compile error inside the embedRepl session.
+>>> {"op":"eval","code":"val r = embedRepl[Int] { (ctx, s) => s.eval[Int](\"\"); s.complete(0) }"}
+~ "ok":false

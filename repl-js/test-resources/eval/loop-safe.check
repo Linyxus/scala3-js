@@ -1,7 +1,0 @@
-# evalLoop, complete, and s.eval are callable from safe-mode user code (tagged
-# @caps.assumeSafe like Eval); a safe-subset loop still accumulates and runs.
->>> {"op":"eval","code":"import language.experimental.safe"}
-~ "ok":true
-
->>> {"op":"eval","code":"val r = evalLoop[Int] { (ctx, s) => s.eval(\"val x = 21\"); val v = s.eval[Int](\"x * 2\"); s.complete(v) }"}
-~ "ok":true.*val r: Int = 42

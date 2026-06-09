@@ -1,0 +1,3 @@
+# An embedRepl can appear inside a one-shot eval body.
+>>> {"op":"eval","code":"val r = eval[Int](\"embedRepl[Int] { (c, s) => s.complete(8) }\")"}
+~ "ok":true.*val r: Int = 8

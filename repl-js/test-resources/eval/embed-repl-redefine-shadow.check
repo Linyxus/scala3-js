@@ -1,0 +1,7 @@
+# Redefining a name in a later line shadows the earlier one (later wins).
+>>> {"op":"eval","code":"val r = embedRepl[Int] { (ctx, s) => s.eval(\"val x = 1\"); s.eval(\"val x = 2\"); val v = s.eval[Int](\"x\"); s.complete(v) }"}
+~ "ok":true.*val r: Int = 2
+
+# An accumulated def shadows a call-site local of the same name (later wins).
+>>> {"op":"eval","code":"val r2 = embedRepl[Int] { (ctx, s) => val x = 1; s.eval(\"val x = 2\"); val v = s.eval[Int](\"x\"); s.complete(v) }"}
+~ "ok":true.*val r2: Int = 2

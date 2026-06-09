@@ -1,0 +1,14 @@
+# The embedRepl EvalContext carries the `embedRepl(...)` call site's surrounding
+# source (with the call replaced by the marker), just like the `eval(gen)` form —
+# so the embedded REPL body can introspect where it is embedded.
+>>> {"op":"eval","code":"val src = embedRepl[String] { (ctx, s) => s.complete(ctx.enclosingSource) }"}
+~ "ok":true.*__evalBodyPlaceholder__
+
+# The user's case: an embedRepl nested in a `.map` sees the enclosing `.map(...)`.
+>>> {"op":"eval","code":"val srcs = List(1, 2, 3).map(x => embedRepl[Boolean]((ctx, s) => s.complete(ctx.enclosingSource.contains(\"map\"))))"}
+~ "ok":true.*List\(true, true, true\)
+
+# Call-site locals in scope at the embedRepl call are captured into ctx.bindings;
+# here each iteration captures `x`, so every embedded REPL session sees exactly one binding.
+>>> {"op":"eval","code":"val ns = List(1, 2, 3).map(x => embedRepl[Int]((ctx, s) => s.complete(ctx.bindings.length)))"}
+~ "ok":true.*List\(1, 1, 1\)

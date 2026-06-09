@@ -59,7 +59,7 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
    *  nested inside a local def within the body (a lambda's params, a local
    *  class's members) are owned by that inner def, not by `__evalResult`, so they
    *  stay put and ride along when their owner moves. This is the same rule the
-   *  one-shot path uses, and it keeps closures (incl. a nested `evalLoop`'s
+   *  one-shot path uses, and it keeps closures (incl. a nested `embedRepl`'s
    *  `(c, s) => …`) intact instead of detaching their parameters. */
   override def transform(ref: SingleDenotation)(using Context): SingleDenotation =
     ref match
