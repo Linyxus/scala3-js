@@ -1,0 +1,40 @@
+# simpleRepl: term-level stateful eval built purely on one-shot eval chaining
+# (scala.runtime.eval.SimpleRepl). Auto-imported into every REPL line like
+# eval/evalSafe/embedRepl. Lines must end with an expression; definition lines
+# end with `; ()`.
+
+# Accumulation across lines + eval returns the trailing expression's value.
+>>> {"op":"eval","code":"val r = simpleRepl[Int] { s => s.eval(\"val x = 10; ()\"); s.eval(\"val y = x + 5; ()\"); s.complete(s.eval[Int](\"x + y\")) }"}
+~ "ok":true.*val r: Int = 25
+
+# defs accumulate and are callable in later lines.
+>>> {"op":"eval","code":"val r2 = simpleRepl[Int] { s => s.eval(\"def double(a: Int) = a * 2; ()\"); s.complete(s.eval[Int](\"double(21)\")) }"}
+~ "ok":true.*val r2: Int = 42
+
+# vars stay live across lines (VarRef facade): assign in one line, read later.
+>>> {"op":"eval","code":"val r3 = simpleRepl[Int] { s => s.eval(\"var n = 3; ()\"); s.eval(\"n += 4; ()\"); s.complete(s.eval[Int](\"n\")) }"}
+~ "ok":true.*val r3: Int = 7
+
+# Shadowing is lexical nesting: a redefinition wins in later lines.
+>>> {"op":"eval","code":"val r4 = simpleRepl[Int] { s => s.eval(\"val z = 1; ()\"); s.eval(\"val z = 2; ()\"); s.complete(s.eval[Int](\"z\")) }"}
+~ "ok":true.*val r4: Int = 2
+
+# Call-site locals of the enclosing statement are visible inside lines.
+>>> {"op":"eval","code":"val r5 = locally { val k = 3; simpleRepl[Int] { s => s.complete(s.eval[Int](\"k * 2\")) } }"}
+~ "ok":true.*val r5: Int = 6
+
+# Lines see prior REPL top-level definitions, like one-shot eval.
+>>> {"op":"eval","code":"val base = 100"}
+~ "ok":true
+
+>>> {"op":"eval","code":"val r6 = simpleRepl[Int] { s => s.complete(s.eval[Int](\"base + 1\")) }"}
+~ "ok":true.*val r6: Int = 101
+
+# A compile error in a line propagates as EvalCompileException and leaves the
+# session state unchanged; the session continues.
+>>> {"op":"eval","code":"val r7 = simpleRepl[Int] { s => s.eval(\"val a = 1; ()\"); val bad = try s.eval[Int](\"a + nope\") catch { case _: scala.runtime.eval.EvalCompileException => -1 }; s.complete(bad + s.eval[Int](\"a\")) }"}
+~ "ok":true.*val r7: Int = 0
+
+# Nested sessions are independent; completion routes to the right boundary.
+>>> {"op":"eval","code":"val r8 = simpleRepl[Int] { a => a.eval(\"val p = 5; ()\"); val inner = simpleRepl[Int] { b => b.eval(\"val q = 7; ()\"); b.complete(b.eval[Int](\"q + 1\")) }; a.complete(inner + a.eval[Int](\"p\")) }"}
+~ "ok":true.*val r8: Int = 13

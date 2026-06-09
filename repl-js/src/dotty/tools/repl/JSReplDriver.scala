@@ -539,7 +539,7 @@ class JSReplDriver(
     val uuid = nextEvalId()
     val outputClassName = str.REPL_SESSION_LINE + uuid + "$__EvalExpression"
     val wrapperName     = str.REPL_SESSION_LINE + uuid + "$__EvalWrapper"
-    val evalImport = "import scala.runtime.eval.Eval.{eval, evalSafe, embedRepl}\n"
+    val evalImport = "import scala.runtime.eval.Eval.{eval, evalSafe, embedRepl}\nimport scala.runtime.eval.SimpleRepl.simpleRepl\n"
     val importBlock = if imports.isEmpty then evalImport else evalImport + imports.mkString("", "\n", "\n")
     val wrappedSource = s"${importBlock}object $wrapperName {\n$enclosingSource\n}\n"
 
@@ -579,7 +579,7 @@ class JSReplDriver(
     val outputClassName = str.REPL_SESSION_LINE + uuid + "$__EvalExpression"
     val wrapperName     = str.REPL_SESSION_LINE + uuid + "$__EvalWrapper"
     val imports = buildEvalImports(state)
-    val evalImport = "import scala.runtime.eval.Eval.{eval, evalSafe, embedRepl}\n"
+    val evalImport = "import scala.runtime.eval.Eval.{eval, evalSafe, embedRepl}\nimport scala.runtime.eval.SimpleRepl.simpleRepl\n"
     val importBlock = if imports.isEmpty then evalImport else evalImport + imports.mkString("", "\n", "\n")
     val sessionEnclosingSource =
       injectPriorLineImports(enclosingSource, priorNames, priorClasses, priorValNames, priorImports)
@@ -652,10 +652,13 @@ class JSReplDriver(
       val userImports = state.imports.getOrElse(i, Nil).map(_.show(using printCtx))
       wrapperImport ++ userImports
     }.toList
-      // The eval auto-import (injected into every wrapper by JSReplPhase) is
-      // collected as a top-level import; drop it here since `evalDynamic` always
-      // prepends it explicitly. Avoids N duplicate import lines in the wrapper.
-      .filterNot(_.contains("scala.runtime.eval.Eval"))
+      // The eval/simpleRepl auto-imports (injected into every wrapper by
+      // JSReplPhase) are collected as top-level imports; drop them here since
+      // `evalDynamic` always prepends them explicitly. Avoids N duplicate
+      // import lines in the wrapper.
+      .filterNot(i =>
+        i.contains("scala.runtime.eval.Eval")
+          || i.contains("scala.runtime.eval.SimpleRepl.simpleRepl"))
       .distinct
 
   private def hasSessionTasty(name: Name): Boolean =
