@@ -49,18 +49,20 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
    *  imperatively in [[ExtractEvalBodyTransformer.installSessionMembers]] — the
    *  one place that owns this transformation. */
   private val sessionMemberSymbols = mutable.Set.empty[Symbol]
-  /** Symbols nested inside the line's trailing expression, re-owned to `evaluate`. */
-  private val sessionEvalLocalSymbols = mutable.Set.empty[Symbol]
   /** Flags a lifted local definition must shed to become a normal public member. */
   private val sessionMemberMask: FlagSet = Private | PrivateLocal | Local | NonMember
 
   override def transformPhase(using Context): Phase = this.next
 
+  /** Re-own to `evaluate` exactly the symbols whose owner is the spliced
+   *  `__evalResult` val — i.e. the eval body's *own* top-level locals. Symbols
+   *  nested inside a local def within the body (a lambda's params, a local
+   *  class's members) are owned by that inner def, not by `__evalResult`, so they
+   *  stay put and ride along when their owner moves. This is the same rule the
+   *  one-shot path uses, and it keeps closures (incl. a nested `evalLoop`'s
+   *  `(c, s) => …`) intact instead of detaching their parameters. */
   override def transform(ref: SingleDenotation)(using Context): SingleDenotation =
     ref match
-      case ref: SymDenotation if config.sessionLine && sessionEvalLocalSymbols.contains(ref.symbol) =>
-        ref.copySymDenotation(owner = config.evaluateMethod)
-
       case ref: SymDenotation if isExpressionVal(ref.symbol.maybeOwner) =>
         ref.copySymDenotation(owner = config.evaluateMethod)
       case _ => ref
@@ -116,7 +118,6 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
             sessionMembers = split.members
             sessionEvalBody = split.evalBody
             sessionMemberSymbols.clear()
-            sessionEvalLocalSymbols.clear()
             sessionMemberSymbols ++= split.members.collect {
               case vd: ValDef => vd.symbol
               case dd: DefDef => dd.symbol
@@ -130,7 +131,6 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
                 vd.name.toString
             }
             config.sessionImportStrings ++= split.imports
-            collectSessionEvalLocalSymbols(split.evalBody)
           val defaultRhs = Literal(Constant(null)).cast(tree.tpt.tpe).withSpan(tree.rhs.span)
           cpy.ValDef(tree)(rhs = defaultRhs)
 
@@ -138,7 +138,6 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
           val captured = if config.sessionLine then sessionEvalBody else bodyTree
           if captured == null then tree
           else
-            if config.sessionLine then installSessionEvalLocalDenots()
             val rhs = ExtractTransformer.transform(captured)
             cpy.DefDef(tree)(rhs = rhs)
 
@@ -194,19 +193,6 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
 
     private def isPriorLineName(name: Name): Boolean =
       name.toString.startsWith("__line")
-
-    private def collectSessionEvalLocalSymbols(tree: Tree)(using Context): Unit =
-      object LocalSymbolTraverser extends TreeTraverser:
-        override def traverse(tree: Tree)(using Context): Unit =
-          tree match
-            case member: MemberDef
-                if member.symbol.exists
-                && !sessionMemberSymbols.contains(member.symbol) =>
-              sessionEvalLocalSymbols += member.symbol
-              traverseChildren(tree)
-            case _ =>
-              traverseChildren(tree)
-      LocalSymbolTraverser.traverse(tree)
 
     /** Setters synthesised for lifted `var` members (see [[installSessionMembers]]).
      *  Held so [[addSessionMembers]] can emit their `def x_=(v) = ()` trees right
@@ -278,12 +264,6 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
         Method | Accessor,
         MethodType(termName("x$1") :: Nil, valSym.info.widenExpr :: Nil, defn.UnitType)
       )
-
-    private def installSessionEvalLocalDenots()(using Context): Unit =
-      sessionEvalLocalSymbols.foreach { sym =>
-        sym.copySymDenotation(owner = config.evaluateMethod)
-          .installAfter(ExtractEvalBody.this)
-      }
 
     private def addSessionMembers(tree: TypeDef)(using Context): TypeDef =
       if sessionMembers.isEmpty then tree
