@@ -17,43 +17,39 @@ import scala.language.experimental.captureChecking
  *
  *  How it works: the session carries `(bindings, enclosingSource)` — the same
  *  pair the `@evalLike` rewriter fills for any eval call. Each `s.eval(code)`
- *  appends a tail to `code` and runs it as a one-shot eval against the current
- *  session context. The tail depends on the call's rendered type argument
- *  (`eval` is `@evalLike`, so the rewriter hands it in as `expectedType`):
+ *  appends one sentinel statement to `code` and runs it as a one-shot eval
+ *  against the current session context:
  *
- *   - **Value line** — `T` is anything but `Unit` or unknown:
- *     {{{
- *     <code>
- *     match { case __v => throw new SimpleReplEnd(SimpleRepl.captureState(), __v) }
- *     }}}
- *     `match` cannot start a statement, so the line continues the code's
- *     trailing expression — and unlike `.match` (a selection, which would bind
- *     to the last operand: `x + y.match`), it consumes the whole infix
- *     expression. `__v` is the line's value — no parsing of `code` needed.
- *     The code must end with a simple expression: bind a trailing `if`/`match`
- *     to a `val` first, and don't end with a definition (the glue would merge
- *     into its right-hand side — use a statement line for definitions).
+ *  {{{
+ *  <code>
+ *  SimpleRepl.endLine[T]()      // fully qualified; [T] when the call gave one
+ *  }}}
  *
- *   - **Statement line** — `T` is `Unit`, or omitted (inferred `Nothing`
- *     renders as ""):
- *     {{{
- *     <code>
- *     throw new SimpleReplEnd(SimpleRepl.captureState(), ())
- *     }}}
- *     The tail is a fresh statement, so the code may be any mix of definitions
- *     and statements with no trailing-expression requirement:
- *     `s.eval("val x = 1")` and `s.eval[Unit]("val x = 1")` both work. A
- *     trailing expression still runs, but its value is discarded.
+ *  A statement always parses, whatever shape `code` has. The eval compile's
+ *  parser-stage phase (`SpliceEvalBody.shapeSimpleReplLine`) then rewrites the
+ *  parsed block into the real tail — REPL line semantics decided on the tree,
+ *  not by string surgery:
  *
- *  In both shapes `captureState()` is itself `@evalLike`: the rewriter
- *  (running inside the eval compile) fills its `bindings` with every term in
- *  scope at that point — the line's own definitions included — and its
- *  `enclosingSource` with the composed chain, whose marker sits exactly there,
- *  inside the line's scope. The next line is therefore compiled lexically
- *  *nested* in this one: definitions accumulate, and shadowing is plain
- *  inner-scope shadowing. The `throw` makes the spliced body type as
- *  `Nothing`, which conforms to whatever type the marker slot expects — so a
- *  line works no matter what type its splice slot demanded.
+ *  {{{
+ *  <stats minus a trailing expression>
+ *  val __simpleReplLineValue__[: T] = <trailing expression | ()>
+ *  throw new SimpleReplEnd(SimpleRepl.captureState(), __simpleReplLineValue__)
+ *  }}}
+ *
+ *  So a line is any mix of definitions and statements; its value is its
+ *  trailing expression (typed against `T` when given — a definition-only line
+ *  with a non-`Unit` `T` is a compile error) or `()`.
+ *
+ *  `captureState()` is `@evalLike`: the rewriter (running inside the eval
+ *  compile) fills its `bindings` with every term in scope at that point — the
+ *  line's own definitions included — and its `enclosingSource` with the
+ *  composed chain, whose marker replaces the sentinel text, inside the line's
+ *  scope. The next line is therefore compiled lexically *nested* in this one:
+ *  definitions accumulate, and shadowing is plain inner-scope shadowing. The
+ *  `throw` makes the spliced body type as `Nothing`, which conforms to
+ *  whatever type the marker slot expects — so a line works no matter what
+ *  type its splice slot demanded (`T` deliberately does not ride on
+ *  `Eval.eval`'s `expectedType`, which would break that conformance).
  *
  *  Being built on bindings + source re-elaboration, this is a *term-level*
  *  session: `val`/`var`/`def`/`given`/`import` accumulate fully (`var`s stay
@@ -106,6 +102,16 @@ object SimpleRepl:
   ): SimpleReplState =
     new SimpleReplState(bindings, enclosingSource)
 
+  /** Line-tail sentinel appended by [[SimpleReplSession.eval]] and replaced at
+   *  parse time by `SpliceEvalBody`'s session-line shaping (the two must agree
+   *  on this fully-qualified name). If it survives to runtime the line could
+   *  not be shaped — its code ends in an unfinished construct that swallowed
+   *  the appended sentinel. */
+  def endLine[T](): Nothing =
+    throw new IllegalStateException(
+      "simpleRepl: the line tail was not shaped — "
+        + "the line's code likely ends in an unfinished construct")
+
 end SimpleRepl
 
 /** Carrier for one captured session step: the bindings and the chain source
@@ -150,19 +156,26 @@ final class SimpleReplSession[R] private[eval] (
    *  the next line will be compiled. */
   def enclosingSource: String = myEnclosingSource
 
-  /** Run one session line against the current session context. With a
-   *  non-`Unit` type argument the line must end with an expression, whose
-   *  value is returned (cast to `T` — unchecked, like `Eval.eval`); with
-   *  `[Unit]` or no type argument the line may be any statements/definitions
-   *  and `()` is returned. On success the session advances to include the
-   *  line's definitions; on a compile error (`EvalCompileException`) or an
-   *  exception thrown by the line itself, the session is unchanged and the
-   *  exception propagates.
+  /** Run one session line against the current session context: REPL
+   *  semantics, any mix of definitions and statements. Returns the line's
+   *  trailing expression's value — typed against `T` when a type argument is
+   *  given, cast unchecked like `Eval.eval` — or `()` for a definition-only
+   *  line (with a non-`Unit` `T` that mismatch is a compile error of the
+   *  line). On success the session advances to include the line's
+   *  definitions; on a compile error (`EvalCompileException`) or an exception
+   *  thrown by the line itself, the session is unchanged and the exception
+   *  propagates.
    *
-   *  `@evalLike` so the rewriter recognises the call: the filled
-   *  `expectedType` (the rendered `T`) selects the tail shape. The filled
-   *  `bindings`/`enclosingSource` are intentionally unused — a session line
-   *  runs in the *session's* accumulated context, not this call site's. */
+   *  The appended `endLine[T]()` sentinel is a plain statement (so the line
+   *  needs no particular shape to parse); `SpliceEvalBody` rewrites the parsed
+   *  block into the real tail, naming the trailing expression. The rendered
+   *  `T` rides as the sentinel's type argument rather than as `Eval.eval`'s
+   *  `expectedType` so the splice block stays `Nothing`-typed — the chain's
+   *  slot types must conform at every level.
+   *
+   *  `@evalLike` so the rewriter fills `expectedType` (the rendered `T`). The
+   *  filled `bindings`/`enclosingSource` are intentionally unused — a session
+   *  line runs in the *session's* accumulated context, not this call site's. */
   @evalLike
   def eval[T](
       code: String,
@@ -170,20 +183,13 @@ final class SimpleReplSession[R] private[eval] (
       expectedType: String = "",
       enclosingSource: String = ""
   ): T =
-    val wantsValue = expectedType.nonEmpty
-      && expectedType != "Unit" && expectedType != "scala.Unit"
-    val tail =
-      if wantsValue then
-        "\nmatch { case __v => throw new _root_.scala.runtime.eval.SimpleReplEnd("
-          + "_root_.scala.runtime.eval.SimpleRepl.captureState(), __v) }"
-      else
-        "\nthrow new _root_.scala.runtime.eval.SimpleReplEnd("
-          + "_root_.scala.runtime.eval.SimpleRepl.captureState(), ())"
+    val targ = if expectedType.isEmpty then "" else s"[$expectedType]"
     try
-      Eval.eval[Any](code + tail, myBindings, "", myEnclosingSource)
+      Eval.eval[Any](
+        code + "\n_root_.scala.runtime.eval.SimpleRepl.endLine" + targ + "()",
+        myBindings, "", myEnclosingSource)
       throw new IllegalStateException(
-        "simpleRepl: line finished without reaching the session tail — "
-          + "for a value-returning line the code must end with an expression.")
+        "simpleRepl: line finished without reaching the session tail")
     catch
       case e: SimpleReplEnd =>
         myBindings = e.state.bindings

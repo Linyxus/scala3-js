@@ -62,7 +62,7 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
   protected def run(using Context): Unit =
     spliced = false
     expressionAppended = false
-    val parsedBody = parseBody
+    val parsedBody = shapeSimpleReplLine(parseBody)
     val expressionClass = parseExpressionClass
     val splicer = new Splicer(parsedBody, expressionClass)
     ctx.compilationUnit.untpdTree = splicer.transform(ctx.compilationUnit.untpdTree)
@@ -71,6 +71,72 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
         s"eval body marker `${config.marker}` not found in enclosing source",
         ctx.compilationUnit.untpdTree.srcPos
       )
+
+  /** Shape a simpleRepl session line. `SimpleReplSession.eval` appends the
+   *  sentinel statement `_root_.scala.runtime.eval.SimpleRepl.endLine[T]()`
+   *  (the `[T]` present when the call site's rendered type argument is) to the
+   *  line's code; when the parsed body ends with it, rewrite the block to
+   *  {{{
+   *  <stats minus a trailing expression>
+   *  val __simpleReplLineValue__[: T] = <trailing expression | ()>
+   *  throw new SimpleReplEnd(SimpleRepl.captureState(), __simpleReplLineValue__)
+   *  }}}
+   *  so the line's value is its trailing expression (typed against `T` when
+   *  given) or `()` for definition-only lines — REPL semantics, decided on the
+   *  parsed tree rather than by string surgery.
+   *
+   *  The synthesised trees all carry the *sentinel's* span: the chained
+   *  `enclosingSource` for the next line (computed by `EvalRewriteTyped` from
+   *  the `captureState()` call's span in the body *source*) then replaces
+   *  exactly the sentinel text, leaving the chain as `<code>\n<marker>` with
+   *  the trailing expression as a typing-only discarded statement.
+   *
+   *  If the sentinel was swallowed by an unfinished construct in the code
+   *  (e.g. a trailing `if c then`), it is not the block's result expression,
+   *  no shaping happens, and the surviving `endLine` call fails loudly at
+   *  runtime. */
+  private def shapeSimpleReplLine(body: Tree)(using Context): Tree = body match
+    case bk @ Block(stats, expr) =>
+      endLineTypeArg(expr) match
+        case Some(targ) =>
+          val span = expr.span
+          val (front, trailing) =
+            if stats.nonEmpty && stats.last.isTerm then (stats.init, Some(stats.last))
+            else (stats, None)
+          val vName = termName("__simpleReplLineValue__")
+          val vDef = ValDef(
+            vName,
+            targ.getOrElse(TypeTree()),
+            trailing.getOrElse(Literal(Constant(())).withSpan(span))
+          ).withSpan(span)
+          val capture =
+            Apply(selectFqn("scala.runtime.eval.SimpleRepl.captureState", span), Nil)
+              .withSpan(span)
+          val excTpt =
+            Select(selectFqn("scala.runtime.eval", span), typeName("SimpleReplEnd"))
+              .withSpan(span)
+          val exc = Apply(
+            Select(New(excTpt).withSpan(span), nme.CONSTRUCTOR).withSpan(span),
+            List(capture, Ident(vName).withSpan(span))
+          ).withSpan(span)
+          cpy.Block(bk)(front :+ vDef, Throw(exc).withSpan(span))
+        case None => body
+    case _ => body
+
+  /** Match `[_root_.]scala.runtime.eval.SimpleRepl.endLine[T]()`; `Some(targ)`
+   *  when it is the sentinel (with its optional explicit type-argument tree). */
+  private def endLineTypeArg(tree: Tree): Option[Option[Tree]] =
+    def path(t: Tree, acc: List[String]): List[String] = t match
+      case Select(qual, name) => path(qual, name.toString :: acc)
+      case Ident(name) => name.toString :: acc
+      case _ => "<non-path>" :: acc
+    def isEndLinePath(t: Tree): Boolean =
+      path(t, Nil).takeRight(5) ==
+        List("scala", "runtime", "eval", "SimpleRepl", "endLine")
+    tree match
+      case Apply(TypeApply(fn, targ :: Nil), Nil) if isEndLinePath(fn) => Some(Some(targ))
+      case Apply(fn, Nil) if isEndLinePath(fn) => Some(None)
+      case _ => None
 
   /** Strip `Apply(Ident(name), Nil)` → `Ident(name)` for any name in
    *  `parenless`, so the body can reference a parens-omitted sibling `def g = 42`

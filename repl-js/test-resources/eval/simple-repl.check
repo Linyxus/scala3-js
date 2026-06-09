@@ -1,8 +1,9 @@
-# simpleRepl: term-level stateful eval built purely on one-shot eval chaining
-# (scala.runtime.eval.SimpleRepl). Auto-imported into every REPL line like
-# eval/evalSafe/embedRepl. Statement lines (no type arg or [Unit]) take any
-# definitions/statements; value lines (non-Unit type arg) must end with an
-# expression.
+# simpleRepl: term-level stateful eval built on one-shot eval chaining plus
+# parser-stage line shaping (scala.runtime.eval.SimpleRepl +
+# SpliceEvalBody.shapeSimpleReplLine). Auto-imported into every REPL line like
+# eval/evalSafe/embedRepl. A line is any mix of definitions and statements;
+# its value is its trailing expression (typed against the call's type
+# argument) or () for definition-only lines.
 
 # Accumulation across lines; statement lines need no trailing expression,
 # with or without an explicit [Unit].
@@ -48,3 +49,13 @@
 # Statement line ending with an expression: it runs, value discarded.
 >>> {"op":"eval","code":"val r10 = simpleRepl[Int] { s => s.eval(\"var c = 0\"); s.eval(\"c += 1\\nc * 100\"); s.complete(s.eval[Int](\"c\")) }"}
 ~ "ok":true.*val r10: Int = 1
+
+# A trailing if-expression is the line's value (tree-level shaping — no
+# string-glue precedence caveats).
+>>> {"op":"eval","code":"val r11 = simpleRepl[Int] { s => s.eval(\"val t = 3\"); s.complete(s.eval[Int](\"if t > 2 then 10 else 20\")) }"}
+~ "ok":true.*val r11: Int = 10
+
+# A definition-only line with a non-Unit type argument is a loud compile
+# error (val __simpleReplLineValue__: Int = ()), not a silent value.
+>>> {"op":"eval","code":"val r12 = simpleRepl[Int] { s => val bad = try s.eval[Int](\"val x = 1\") catch { case _: scala.runtime.eval.EvalCompileException => -1 }; s.complete(bad) }"}
+~ "ok":true.*val r12: Int = -1
