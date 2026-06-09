@@ -238,16 +238,12 @@ private final class TerminalConsoleLineReader(
       val sequence = if keySequence.nonEmpty then keySequence else s
       val ctrl = keyBool(key, "ctrl")
       val meta = keyBool(key, "meta")
-      val shift = keyBool(key, "shift")
 
       if ctrl && name == "c" then
         output.write("^C\n")
         closeFromInput()
       else if promptActive then
-        if isShiftEnter(name, sequence, shift) then
-          editor.insertNewline()
-          render()
-        else if isEnter(name, sequence) then
+        if isEnter(name, sequence) then
           submit()
         else if ctrl then
           handleCtrl(name)
@@ -292,6 +288,9 @@ private final class TerminalConsoleLineReader(
         render()
       case "n" =>
         editor.nextHistory()
+        render()
+      case "o" =>
+        editor.insertNewline()
         render()
       case "l" =>
         clearScreen()
@@ -359,9 +358,9 @@ private final class TerminalConsoleLineReader(
   private def render(cursorOverride: Option[Int] = None): Unit =
     if promptActive then
       val cursor = cursorOverride.getOrElse(editor.cursorIndex)
-      val rendered = promptText + editor.buffer
+      val rendered = TerminalLineRendering.render(promptText, editor.buffer)
       val endPos = terminalPosition(rendered)
-      val cursorPos = terminalPosition(promptText + editor.buffer.substring(0, cursor))
+      val cursorPos = terminalPosition(TerminalLineRendering.renderPrefix(promptText, editor.buffer, cursor))
 
       if renderedCursorRow > 0 then output.write(s"\u001b[${renderedCursorRow}A")
       output.write("\r\u001b[0J")
@@ -409,12 +408,6 @@ private final class TerminalConsoleLineReader(
   private def isEnter(name: String, sequence: String): Boolean =
     name == "return" || name == "enter" || sequence == "\r" || sequence == "\n"
 
-  private def isShiftEnter(name: String, sequence: String, shift: Boolean): Boolean =
-    (shift && (name == "return" || name == "enter")) ||
-      sequence == "\u001b[13;2u" ||
-      sequence == "\u001b[13;2~" ||
-      sequence == "\u001b[27;2;13~"
-
   private def printableText(s: String): String =
     if s.exists(ch => ch == '\u001b' || ch == '\r' || ch == '\n' || ch == 0x7f.toChar) then ""
     else s.filter(ch => ch == '\t' || ch >= ' ')
@@ -438,3 +431,15 @@ private final class TerminalConsoleLineReader(
     isDefined(value.selectDynamic(name))
 
 private final case class TerminalPosition(row: Int, column: Int)
+
+private[repl] object TerminalLineRendering:
+  val ContinuationPrompt = "     | "
+
+  def render(promptText: String, buffer: String): String =
+    promptText + renderBuffer(buffer)
+
+  def renderPrefix(promptText: String, buffer: String, cursor: Int): String =
+    promptText + renderBuffer(buffer.substring(0, cursor))
+
+  private def renderBuffer(buffer: String): String =
+    buffer.replace("\n", "\n" + ContinuationPrompt)

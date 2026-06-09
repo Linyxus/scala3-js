@@ -39,8 +39,12 @@ object ReplScriptedTests:
                   if ok then (passed + 1, failed, skipped)
                   else (passed, failed + 1, skipped)
                 val (passed1, failed1, skipped1) = afterEvalSmoke
-                if runLineEditorSmoke() then (passed1 + 1, failed1, skipped1)
-                else (passed1, failed1 + 1, skipped1)
+                val afterLineEditorSmoke =
+                  if runLineEditorSmoke() then (passed1 + 1, failed1, skipped1)
+                  else (passed1, failed1 + 1, skipped1)
+                val (passed2, failed2, skipped2) = afterLineEditorSmoke
+                if runLineRenderingSmoke() then (passed2 + 1, failed2, skipped2)
+                else (passed2, failed2 + 1, skipped2)
               }
           }
         }.onComplete {
@@ -108,7 +112,7 @@ object ReplScriptedTests:
     editor.insert("val x =")
     editor.insertNewline()
     editor.insert("  1")
-    val multilineOk = check(editor.accept() == "val x =\n  1", "shift-enter newline was not preserved")
+    val multilineOk = check(editor.accept() == "val x =\n  1", "inserted newline was not preserved")
 
     editor.insert("abc")
     editor.moveToLineStart()
@@ -135,6 +139,30 @@ object ReplScriptedTests:
     val ok = multilineOk && ctrlOk && historyOk
     if ok then println("PASS line-editor-smoke")
     else println("FAIL line-editor-smoke")
+    ok
+
+  private def runLineRenderingSmoke(): Boolean =
+    def check(cond: Boolean, clue: String): Boolean =
+      if cond then true
+      else
+        println(s"line-rendering-smoke: $clue")
+        false
+
+    val rendered = TerminalLineRendering.render("scala> ", "val x =\n  1")
+    val renderedOk = check(
+      rendered == "scala> val x =\n   |  1",
+      "continuation prompt was not rendered after newline",
+    )
+
+    val prefix = TerminalLineRendering.renderPrefix("scala> ", "val x =\n  1", "val x =\n".length)
+    val prefixOk = check(
+      prefix == "scala> val x =\n   |",
+      "cursor prefix did not include continuation prompt",
+    )
+
+    val ok = renderedOk && prefixOk
+    if ok then println("PASS line-rendering-smoke")
+    else println("FAIL line-rendering-smoke")
     ok
 
   /** FileDiff semantics: keep only lines with a non-whitespace char. */
