@@ -427,13 +427,13 @@ class JSReplDriver(
     val out = scala.collection.mutable.ListBuffer.empty[String]
     val sb = new StringBuilder
     var inTok = false
-    var quote = ' '
+    var quote = '\u0000'
     def flush(): Unit = if inTok then { out += sb.toString; sb.setLength(0); inTok = false }
     var i = 0
     while i < s.length do
       val c = s.charAt(i)
-      if quote != ' ' then
-        if c == quote then quote = ' ' else sb.append(c)
+      if quote != '\u0000' then
+        if c == quote then quote = '\u0000' else sb.append(c)
       else c match
         case '\'' | '"'           => quote = c; inTok = true
         case w if w.isWhitespace  => flush()
