@@ -307,6 +307,9 @@ private[eval] class ExtractEvalBody(config: EvalCompilerConfig, store: EvalStore
       case tree: This =>
         val cls = tree.symbol
         if cls == config.expressionClass then super.transform(tree)
+        // A class defined inside the eval body moves into `evaluate` with it,
+        // so its own `this` (e.g. in its accessors) needs no outer walk.
+        else if isLocalToBody(cls) then super.transform(tree)
         else if config.sessionLine && isOwnedBySessionMember(cls) then
           super.transform(tree)
         else if cls.is(ModuleClass) && isGloballyAccessible(cls) then

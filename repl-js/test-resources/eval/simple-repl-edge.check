@@ -1,0 +1,132 @@
+# simpleRepl: session mechanics, control flow, and adversarial edge cases.
+# Companion to simple-repl.check; brainstormed by a team of test-design agents
+# (mechanics + adversarial lenses), curated by hand.
+
+# three-level nesting: each completion unwinds to its own boundary.
+>>> {"op": "eval", "code": "val n1 = simpleRepl[Int] { a => a.eval(\"val x = 1\"); val mid = simpleRepl[Int] { b => b.eval(\"val y = 2\"); val inner = simpleRepl[Int] { c => c.eval(\"val z = 3\"); c.complete(c.eval[Int](\"z * 100\")) }; b.complete(inner + b.eval[Int](\"y * 10\")) }; a.complete(mid + a.eval[Int](\"x\")) }"}
+~ "ok":true.*val n1: Int = 321
+
+# outer-session data crosses via driving-code locals; inner LINES can't see outer defs.
+>>> {"op": "eval", "code": "val n2 = simpleRepl[Int] { a => a.eval(\"val p = 7\"); val pv = a.eval[Int](\"p\"); val q = simpleRepl[Int] { b => b.eval(\"val w = 6\"); val leak = try b.eval[Int](\"p\") catch { case _: scala.runtime.eval.EvalCompileException => 0 }; b.complete(pv * b.eval[Int](\"w\") + leak) }; a.complete(q) }"}
+~ "ok":true.*val n2: Int = 42
+
+# a runtime exception from a line is catchable in driving code; session continues.
+>>> {"op": "eval", "code": "val n3 = simpleRepl[Int] { s => s.eval(\"val a = 5\"); val r = try s.eval[Int](\"if a > 0 then throw new NoSuchElementException() else 0\") catch { case _: NoSuchElementException => -1 }; s.complete(r + s.eval[Int](\"a\")) }"}
+~ "ok":true.*val n3: Int = 4
+
+# a line that throws before its tail commits nothing: its defs are not visible later.
+>>> {"op": "eval", "code": "val n4 = simpleRepl[Int] { s => try s.eval(\"val ghost = 1\\nthrow new NoSuchElementException()\") catch { case _: NoSuchElementException => () }; val r = try s.eval[Int](\"ghost\") catch { case _: scala.runtime.eval.EvalCompileException => -7 }; s.complete(r) }"}
+~ "ok":true.*val n4: Int = -7
+
+# handle aliasing: identity-based injection makes the alias visible inside lines.
+>>> {"op": "eval", "code": "val n5 = simpleRepl[Int] { s => val c2 = s; c2.eval(\"val x = 4\"); c2.eval[Nothing](\"c2.complete(x + 2)\") }"}
+~ "ok":true.*val n5: Int = 6
+
+# a driving-code loop issues the same line text repeatedly; var stays live.
+>>> {"op": "eval", "code": "val n6 = simpleRepl[Int] { s => s.eval(\"var acc = 0\"); var i = 0; while i < 5 do { s.eval(\"acc += 2\"); i += 1 }; s.complete(s.eval[Int](\"acc\")) }"}
+~ "ok":true.*val n6: Int = 10
+
+# the injected handle inside lines is the live session: bindings grows, expectedType readable.
+>>> {"op": "eval", "code": "val n7 = simpleRepl[Boolean] { s => s.eval(\"val a = 1\"); val b1 = s.eval[Int](\"s.bindings.length\"); s.eval(\"val b = 2\"); val b2 = s.eval[Int](\"s.bindings.length\"); s.complete(b2 > b1 && s.eval[String](\"s.expectedType\").contains(\"Boolean\")) }"}
+~ "ok":true.*val n7: Boolean = true
+
+# complete throws immediately: a second complete is dead code, first wins.
+>>> {"op": "eval", "code": "val n8 = simpleRepl[Int] { s => s.complete(1); s.complete(2) }"}
+~ "ok":true.*val n8: Int = 1
+
+# catch Exception in driving code cannot intercept completion (Throwable-based carrier).
+>>> {"op": "eval", "code": "val n9 = simpleRepl[Int] { s => try s.complete(5) catch { case _: Exception => s.complete(-1) } }"}
+~ "ok":true.*val n9: Int = 5
+
+# a blanket Throwable catch DOES swallow the completion carrier; body continues.
+>>> {"op": "eval", "code": "val n10 = simpleRepl[Int] { s => try s.complete(5) catch { case _: Throwable => () }; s.complete(-1) }"}
+~ "ok":true.*val n10: Int = -1
+
+# an exception built from session state inside a line carries its payload out intact.
+>>> {"op": "eval", "code": "val n11 = simpleRepl[Int] { s => s.eval(\"val m = 21\"); val r = try s.eval[Int](\"if m > 0 then throw new UnsupportedOperationException(\\\"m=\\\" + m) else 0\") catch { case e: UnsupportedOperationException => e.getMessage.length }; s.complete(r + s.eval[Int](\"m\")) }"}
+~ "ok":true.*val n11: Int = 25
+
+# reentrant eval: a line can run s.eval against the pre-line state and use the result.
+>>> {"op": "eval", "code": "val n12 = simpleRepl[Int] { s => s.eval(\"val x = 3\"); val v = s.eval[Int](\"val y = s.eval[Int](\\\"x + 100\\\")\\ny + x\"); s.complete(v) }"}
+~ "ok":true.*val n12: Int = 106
+
+# reentrant eval's definitions are clobbered by the enclosing line's own commit (pinned).
+>>> {"op": "eval", "code": "val n13 = simpleRepl[Int] { s => s.eval(\"val u = s.eval[Unit](\\\"val hidden = 9\\\")\"); val r = try s.eval[Int](\"hidden\") catch { case _: scala.runtime.eval.EvalCompileException => -1 }; s.complete(r) }"}
+~ "ok":true.*val n13: Int = -1
+
+# a REPL-top-level class is nominal (rs$line wrapper + tasty): lines can throw it,
+# driving code catches it with real class identity.
+>>> {"op": "eval", "code": "class Boom(val n: Int) extends RuntimeException"}
+~ "ok":true
+
+# 
+>>> {"op": "eval", "code": "val n14 = simpleRepl[Int] { s => s.eval(\"val m = 2\"); val r = try s.eval[Int](\"throw new Boom(m)\") catch { case b: Boom => b.n * 10 }; s.complete(r) }"}
+~ "ok":true.*val n14: Int = 20
+
+# empty line: no-op statement line.
+>>> {"op": "eval", "code": "val e1 = simpleRepl[Int] { s => s.eval(\"\"); s.complete(s.eval[Int](\"1\")) }"}
+~ "ok":true.*val e1: Int = 1
+
+# whitespace-only line.
+>>> {"op": "eval", "code": "val e2 = simpleRepl[Int] { s => s.eval(\"   \\t  \"); s.complete(s.eval[Int](\"2\")) }"}
+~ "ok":true.*val e2: Int = 2
+
+# comment-only line: the appended newline saves the sentinel.
+>>> {"op": "eval", "code": "val e3 = simpleRepl[Int] { s => s.eval(\"// nothing to see here\"); s.complete(s.eval[Int](\"3\")) }"}
+~ "ok":true.*val e3: Int = 3
+
+# code ending with a trailing line comment.
+>>> {"op": "eval", "code": "val e4 = simpleRepl[Int] { s => s.eval(\"val a = 4 // trailing comment\"); s.complete(s.eval[Int](\"a\")) }"}
+~ "ok":true.*val e4: Int = 4
+
+# leading/trailing blank lines shift spans; sentinel-span surgery must stay exact.
+>>> {"op": "eval", "code": "val e5 = simpleRepl[Int] { s => s.eval(\"\\n\\nval b = 5\\n\\n\"); s.complete(s.eval[Int](\"b\")) }"}
+~ "ok":true.*val e5: Int = 5
+
+# semicolons-only line: whatever the parse does, no corruption and session continues.
+>>> {"op": "eval", "code": "val e6 = simpleRepl[Int] { s => val ok = try { s.eval(\";;\"); 1 } catch { case _: scala.runtime.eval.EvalCompileException => 1 }; s.complete(ok + 5) }"}
+~ "ok":true.*val e6: Int = 6
+
+# user-defined val colliding with the synthesized line-value name: double definition,
+# loud compile error, session continues.
+>>> {"op": "eval", "code": "val e7 = simpleRepl[Int] { s => val r = try { s.eval(\"val __simpleReplLineValue__ = 99\"); 1 } catch { case _: scala.runtime.eval.EvalCompileException => -1 }; s.complete(r) }"}
+~ "ok":true.*val e7: Int = -1
+
+# explicitly calling the endLine sentinel mid-line: survives shaping, fails loudly at runtime.
+>>> {"op": "eval", "code": "val e9 = simpleRepl[Int] { s => val r = try { s.eval(\"val x = 1; scala.runtime.eval.SimpleRepl.endLine(); val y = 2\"); 0 } catch { case _: IllegalStateException => 9 }; s.complete(r) }"}
+~ "ok":true.*val e9: Int = 9
+
+# sentinel swallowed by an unfinished if: fails loudly one way or the other.
+>>> {"op": "eval", "code": "val e10 = simpleRepl[Int] { s => val r = try { s.eval(\"if true then\"); 0 } catch { case _: scala.runtime.eval.EvalCompileException => 10; case _: IllegalStateException => 11 }; s.complete(r) }"}
+~ "ok":true.*val e10: Int = 1[01]
+
+# sentinel absorbed by a trailing operator: loud failure (compile error or runtime ISE).
+>>> {"op": "eval", "code": "val e11 = simpleRepl[Int] { s => val r = try { s.eval(\"1 +\"); 0 } catch { case _: scala.runtime.eval.EvalCompileException => 12; case _: IllegalStateException => 11 }; s.complete(r) }"}
+~ "ok":true.*val e11: Int = 1[12]
+
+# deep session: 12 chained lines, accumulated bindings all visible.
+>>> {"op": "eval", "code": "val e12 = simpleRepl[Int] { s => var i = 0; while i < 12 do { s.eval(\"val v\" + i + \" = \" + i); i += 1 }; s.complete(s.eval[Int](\"v0 + v5 + v11\")) }"}
+~ "ok":true.*val e12: Int = 16
+
+# unicode identifiers round-trip through capture and re-parse.
+>>> {"op": "eval", "code": "val e13 = simpleRepl[Double] { s => s.eval(\"val π = 3.0\"); s.eval(\"val 半径 = 2.0\"); s.complete(s.eval[Double](\"π * 半径 * 半径\")) }"}
+~ "ok":true.*val e13: Double = 12
+
+# a triple-quoted literal containing braces, a quote, a newline, and code-looking text
+# survives repeated chain re-parsing; the fake definition inside it does not bind.
+>>> {"op": "eval", "code": "val e14 = simpleRepl[Int] { s => s.eval(\"val str = \\\"\\\"\\\"{ \\\" }\\nval fake = 1\\\"\\\"\\\"\"); val nofake = try s.eval[Int](\"fake\") catch { case _: scala.runtime.eval.EvalCompileException => 100 }; s.complete(nofake + s.eval[Int](\"str.length\")) }"}
+~ "ok":true.*val e14: Int = 118
+
+# error message quality: a typo'd name is reported by name; session still usable.
+>>> {"op": "eval", "code": "val e15 = simpleRepl[Int] { s => s.eval(\"val count = 41\"); val msg = try { s.eval[Int](\"conut + 1\"); \"\" } catch { case e: scala.runtime.eval.EvalCompileException => e.getMessage }; s.complete(if msg != null && msg.contains(\"conut\") then s.eval[Int](\"count + 1\") else -1) }"}
+~ "ok":true.*val e15: Int = 42
+
+# deeply nested blocks in one line: shaping only touches the top-level block.
+>>> {"op": "eval", "code": "val e16 = simpleRepl[Int] { s => s.complete(s.eval[Int](\"{ val a = { val b = { val c = 3; c + 1 }; b * 2 }; a + 10 }\")) }"}
+~ "ok":true.*val e16: Int = 18
+
+# ADVERSARIAL (predicted bug): the chain marker identifier appearing in a user string
+# literal corrupts chain composition (replace-all). Pinning current behavior.
+>>> {"op": "eval", "code": "val e8 = simpleRepl[Int] { s => s.eval(\"val m = \\\"__evalBodyPlaceholder__\\\"\"); s.eval(\"val n = m.length\"); val late = try s.eval[Int](\"n\") catch { case _: scala.runtime.eval.EvalCompileException => -999 }; s.complete(late) }"}
+~ "ok":true.*val e8: Int = -999
+

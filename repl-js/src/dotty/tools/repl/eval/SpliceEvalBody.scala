@@ -96,7 +96,8 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
    *  no shaping happens, and the surviving `endLine` call fails loudly at
    *  runtime. */
   private def shapeSimpleReplLine(body: Tree)(using Context): Tree = body match
-    case bk @ Block(stats, expr) =>
+    case bk @ Block(stats0, expr0) =>
+      val (stats, expr) = unswallowTrailingLambda(stats0, expr0)
       endLineTypeArg(expr) match
         case Some(targ) =>
           val span = expr.span
@@ -122,6 +123,25 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
           cpy.Block(bk)(front :+ vDef, Throw(exc).withSpan(span))
         case None => body
     case _ => body
+
+  /** Un-swallow the sentinel from a trailing lambda. A line ending with a bare
+   *  lambda (`x => x * 2`) parses with the lambda's body extending to the end
+   *  of the block, so the appended sentinel becomes the lambda body's result
+   *  expression instead of the block's. Since the sentinel is ours and always
+   *  appended *after* the user's code, finding it there is unambiguous: pull
+   *  it out, restore the lambda (with the sentinel removed from its body) as
+   *  the trailing statement, and let shaping proceed normally. A lambda whose
+   *  whole body is the sentinel (code ended with `x =>`) is left alone — no
+   *  user body to restore — and fails loudly via the surviving `endLine`. */
+  private def unswallowTrailingLambda(stats: List[Tree], expr: Tree)(using Context): (List[Tree], Tree) =
+    expr match
+      case fn @ Function(params, fbody @ Block(fstats, fexpr))
+          if endLineTypeArg(fexpr).isDefined && fstats.nonEmpty =>
+        val restoredBody = fstats match
+          case one :: Nil => one
+          case more => cpy.Block(fbody)(more.init, more.last)
+        (stats :+ cpy.Function(fn)(params, restoredBody), fexpr)
+      case _ => (stats, expr)
 
   /** Match `[_root_.]scala.runtime.eval.SimpleRepl.endLine[T]()`; `Some(targ)`
    *  when it is the sentinel (with its optional explicit type-argument tree). */
