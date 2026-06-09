@@ -59,3 +59,12 @@
 # error (val __simpleReplLineValue__: Int = ()), not a silent value.
 >>> {"op":"eval","code":"val r12 = simpleRepl[Int] { s => val bad = try s.eval[Int](\"val x = 1\") catch { case _: scala.runtime.eval.EvalCompileException => -1 }; s.complete(bad) }"}
 ~ "ok":true.*val r12: Int = -1
+
+# The session handle is visible inside lines under its call-site name: lines
+# can read the session context...
+>>> {"op":"eval","code":"val r13 = simpleRepl[String] { ctx => ctx.complete(ctx.eval(\"ctx.enclosingSource\")) }"}
+~ "ok":true.*val r13: String
+
+# ...and even complete the session from inside an eval'd line.
+>>> {"op":"eval","code":"val r14 = simpleRepl[Int] { s => s.eval(\"val x = 20\"); s.eval[Nothing](\"s.complete(x + 1)\") }"}
+~ "ok":true.*val r14: Int = 21

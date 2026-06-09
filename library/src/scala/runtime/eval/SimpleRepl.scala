@@ -58,7 +58,10 @@ import scala.language.experimental.captureChecking
  *  wrapper-based [[Eval.embedRepl]] for that. Locals of the
  *  `simpleRepl { s => ... }` lambda itself are not visible inside lines (the
  *  chain is rooted at the `simpleRepl` call site); locals of the *enclosing
- *  statement* are.
+ *  statement* are. The one exception is the session handle itself: every
+ *  call-site name bound to it is grafted into the chain on first use
+ *  ([[SimpleReplSession.injectSelfNames]]), so lines can drive their own
+ *  session — `s.eval("s.complete(x + 1)")` completes it from inside a line.
  */
 object SimpleRepl:
 
@@ -147,6 +150,7 @@ final class SimpleReplSession[R] private[eval] (
 ):
   private var myBindings: Array[Eval.Binding] = initialBindings
   private var myEnclosingSource: String = initialEnclosingSource
+  private val injectedSelfNames = scala.collection.mutable.HashSet.empty[String]
 
   /** The bindings currently in scope for the next line: the `simpleRepl` call
    *  site's captures plus everything session lines have defined so far. */
@@ -155,6 +159,43 @@ final class SimpleReplSession[R] private[eval] (
   /** The session's current chain source; its marker is the splice point where
    *  the next line will be compiled. */
   def enclosingSource: String = myEnclosingSource
+
+  /** Source rendering of this session's own type, for the chain-injected
+   *  declarations of the handle ([[injectSelfNames]]). */
+  private def selfTypeSource: String =
+    val r = if expectedType.isEmpty then "?" else expectedType
+    s"_root_.scala.runtime.eval.SimpleReplSession[$r]"
+
+  /** Make this session handle visible inside lines, under every name the
+   *  *call site* knows it by.
+   *
+   *  The chain is rooted at the `simpleRepl` call site, where the marker
+   *  replaced the whole call — lambda included — so the body's handle name
+   *  (e.g. the `ctx` of `simpleRepl { ctx => ... }`) is neither in the chain
+   *  source nor in the root bindings. But `eval`'s own `@evalLike` fill
+   *  captures the locals in scope at the `ctx.eval(...)` call, under their
+   *  source names — including the handle itself. Each capture whose value
+   *  *is* this session (by identity) is grafted into the chain as a
+   *  typing-only declaration (the [[Eval.sessionPlaceholder]] pattern; the
+   *  rhs never runs) backed by a real binding, so lines can use the handle:
+   *  `ctx.complete(...)`, `ctx.eval(...)`, `ctx.enclosingSource`, … */
+  private def injectSelfNames(callBindings: Array[Eval.Binding]): Unit =
+    var i = 0
+    while i < callBindings.length do
+      val b = callBindings(i)
+      val v = b.value match
+        case ref: Eval.VarRef[?] => ref.get()
+        case other => other
+      if (v.asInstanceOf[AnyRef] eq this) && !injectedSelfNames.contains(b.name) then
+        injectedSelfNames += b.name
+        myEnclosingSource = myEnclosingSource.replace(
+          EvalContext.placeholder,
+          s"""{
+             |val ${b.name}: $selfTypeSource = _root_.scala.runtime.eval.Eval.sessionPlaceholder[$selfTypeSource]
+             |${EvalContext.placeholder}
+             |}""".stripMargin)
+        myBindings = myBindings :+ Eval.bind(b.name, this)
+      i += 1
 
   /** Run one session line against the current session context: REPL
    *  semantics, any mix of definitions and statements. Returns the line's
@@ -173,9 +214,11 @@ final class SimpleReplSession[R] private[eval] (
    *  `expectedType` so the splice block stays `Nothing`-typed — the chain's
    *  slot types must conform at every level.
    *
-   *  `@evalLike` so the rewriter fills `expectedType` (the rendered `T`). The
-   *  filled `bindings`/`enclosingSource` are intentionally unused — a session
-   *  line runs in the *session's* accumulated context, not this call site's. */
+   *  `@evalLike` so the rewriter fills `expectedType` (the rendered `T`) and
+   *  `bindings` (the call site's locals — used only to discover names for the
+   *  session handle itself, see [[injectSelfNames]]). The filled
+   *  `enclosingSource` is intentionally unused — a session line runs in the
+   *  *session's* accumulated context, not this call site's. */
   @evalLike
   def eval[T](
       code: String,
@@ -183,6 +226,7 @@ final class SimpleReplSession[R] private[eval] (
       expectedType: String = "",
       enclosingSource: String = ""
   ): T =
+    injectSelfNames(bindings)
     val targ = if expectedType.isEmpty then "" else s"[$expectedType]"
     try
       Eval.eval[Any](
