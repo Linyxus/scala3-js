@@ -539,7 +539,7 @@ class JSReplDriver(
     val uuid = nextEvalId()
     val outputClassName = str.REPL_SESSION_LINE + uuid + "$__EvalExpression"
     val wrapperName     = str.REPL_SESSION_LINE + uuid + "$__EvalWrapper"
-    val evalImport = "import scala.runtime.eval.Eval.{eval, evalSafe, evalLoop}\n"
+    val evalImport = "import scala.runtime.eval.Eval.{eval, evalSafe, embedRepl}\n"
     val importBlock = if imports.isEmpty then evalImport else evalImport + imports.mkString("", "\n", "\n")
     val wrappedSource = s"${importBlock}object $wrapperName {\n$enclosingSource\n}\n"
 
@@ -573,13 +573,13 @@ class JSReplDriver(
       priorImports: List[List[String]]
   ): Either[(Array[String], String), (Any, Any, String, Array[String], Array[String])] =
     val state = currentState
-    if state == null then return Left((Array("evalLoop: no active REPL state"), ""))
+    if state == null then return Left((Array("embedRepl: no active REPL state"), ""))
 
     val uuid = nextEvalId()
     val outputClassName = str.REPL_SESSION_LINE + uuid + "$__EvalExpression"
     val wrapperName     = str.REPL_SESSION_LINE + uuid + "$__EvalWrapper"
     val imports = buildEvalImports(state)
-    val evalImport = "import scala.runtime.eval.Eval.{eval, evalSafe, evalLoop}\n"
+    val evalImport = "import scala.runtime.eval.Eval.{eval, evalSafe, embedRepl}\n"
     val importBlock = if imports.isEmpty then evalImport else evalImport + imports.mkString("", "\n", "\n")
     val sessionEnclosingSource =
       injectPriorLineImports(enclosingSource, priorNames, priorClasses, priorValNames, priorImports)

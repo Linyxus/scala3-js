@@ -1938,11 +1938,18 @@ object Build {
           IO.delete(tmpDir)
         }
 
-        // Copy scala library classes + tasty files
-        if (!scalaLibDir.exists()) {
+        // Copy scala library classes + tasty files. Keep the copied tree in
+        // sync so renamed/deleted classes do not remain in the packed classpath.
+        val scalaLibInputs = (scalaLibClasses ** "*").get.filter(_.isFile).toSet
+        val syncScalaLib = FileFunction.cached(
+          s.cacheDirectory / "bundleScalaLib", FilesInfo.lastModified, FilesInfo.exists
+        ) { (_: Set[File]) =>
           s.log.info(s"Copying scala library from $scalaLibClasses to $scalaLibDir...")
+          if (scalaLibDir.exists()) IO.delete(scalaLibDir)
           IO.copyDirectory(scalaLibClasses, scalaLibDir)
+          (scalaLibDir ** "*").get.filter(_.isFile).toSet
         }
+        syncScalaLib(scalaLibInputs)
 
         // Extract scalajs-library JAR
         if (!sjsLibDir.exists()) {
@@ -1961,13 +1968,17 @@ object Build {
         val _2 = (`scala-library-sjs` / Compile / compile).value
 
         val sjsirDir = libDir / "sjsir"
-        if (!sjsirDir.exists()) {
+        val sjsirFiles = (scalaLibSjsClasses ** "*.sjsir").get
+        val sjsirInputs = (Set(sjsLibJar, javalibJar) ++ sjsirFiles).toSet
+        val syncSjsir = FileFunction.cached(
+          s.cacheDirectory / "bundleSjsir", FilesInfo.lastModified, FilesInfo.exists
+        ) { (_: Set[File]) =>
           s.log.info(s"Extracting .sjsir files for linker to $sjsirDir...")
+          if (sjsirDir.exists()) IO.delete(sjsirDir)
           IO.createDirectory(sjsirDir)
           IO.unzip(sjsLibJar, sjsirDir, "*.sjsir")
           IO.unzip(javalibJar, sjsirDir, "*.sjsir")
           // Copy .sjsir from Scala stdlib (scala-library-sjs)
-          val sjsirFiles = (scalaLibSjsClasses ** "*.sjsir").get
           for (f <- sjsirFiles) {
             val rel = scalaLibSjsClasses.toPath.relativize(f.toPath)
             val target = sjsirDir.toPath.resolve(rel)
@@ -1975,7 +1986,9 @@ object Build {
             if (!target.toFile.exists()) // don't overwrite scalajs-library/javalib entries
               IO.copyFile(f, target.toFile)
           }
+          (sjsirDir ** "*.sjsir").get.toSet
         }
+        syncSjsir(sjsirInputs)
 
         s.log.info(s"Bundled libraries at $libDir")
         libDir
