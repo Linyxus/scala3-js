@@ -7,8 +7,8 @@
 #
 #   REPL_PROJECT   sbt project that links the front-end main.js
 #                  (e.g. scala3-repl-cli-sjs / scala3-repl-json-sjs)
-#   REPL_FASTOPT   name of its fastopt output subdir
-#                  (e.g. scala3-repl-cli-fastopt / scala3-repl-json-fastopt)
+#   REPL_OPT       name of its fullopt output subdir
+#                  (e.g. scala3-repl-cli-opt / scala3-repl-json-opt)
 #
 # Why always invoke sbt: the previous launchers only rebuilt when an artifact was
 # *missing*, never when it was *stale*, so editing a compiler/repl source and
@@ -22,8 +22,8 @@
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" >& /dev/null && pwd)/.."
 
-if [ -z "$REPL_PROJECT" ] || [ -z "$REPL_FASTOPT" ]; then
-  echo "common-repl-js: REPL_PROJECT and REPL_FASTOPT must be set before sourcing." >&2
+if [ -z "$REPL_PROJECT" ] || [ -z "$REPL_OPT" ]; then
+  echo "common-repl-js: REPL_PROJECT and REPL_OPT must be set before sourcing." >&2
   exit 1
 fi
 
@@ -36,18 +36,18 @@ echo "Ensuring REPL artifacts are up to date ($REPL_PROJECT)..." >&2
 # Redirect sbt's logs to stderr: stdout is the REPL's own channel (a JSON
 # protocol stream for the worker), and build chatter must not corrupt it.
 if ! (cd "$ROOT" && sbt --client \
-      "scala3-compiler-cli-sjs/packClasspath; scala3-compiler-cli-sjs/packLinkerLibs; $REPL_PROJECT/fastLinkJS" 1>&2); then
+      "scala3-compiler-cli-sjs/packClasspath; scala3-compiler-cli-sjs/packLinkerLibs; $REPL_PROJECT/fullLinkJS" 1>&2); then
   echo "Error: sbt build failed; refusing to launch against stale artifacts." >&2
   exit 1
 fi
 
-MAIN_JS="$(find "$ROOT"/*/target -name "main.js" -path "*/$REPL_FASTOPT/*" 2>/dev/null | head -1)"
+MAIN_JS="$(find "$ROOT"/*/target -name "main.js" -path "*/$REPL_OPT/*" 2>/dev/null | head -1)"
 export DOTTY_CLASSPATH_BIN="$(find "$CSJS_DIR" -name "classpath.bin" 2>/dev/null | head -1)"
 export DOTTY_LINKER_LIBS_BIN="$(find "$CSJS_DIR" -name "linker-libs.bin" 2>/dev/null | head -1)"
 
 if [ -z "$MAIN_JS" ] || [ -z "$DOTTY_CLASSPATH_BIN" ] || [ -z "$DOTTY_LINKER_LIBS_BIN" ]; then
   echo "Error: build succeeded but an artifact is missing:" >&2
-  echo "  main.js         = ${MAIN_JS:-<not found under $REPL_FASTOPT>}" >&2
+  echo "  main.js         = ${MAIN_JS:-<not found under $REPL_OPT>}" >&2
   echo "  classpath.bin   = ${DOTTY_CLASSPATH_BIN:-<not found>}" >&2
   echo "  linker-libs.bin = ${DOTTY_LINKER_LIBS_BIN:-<not found>}" >&2
   exit 1

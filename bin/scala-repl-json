@@ -6,5 +6,5 @@
 # bin/common-repl-js for the shared logic and rationale.
 
 REPL_PROJECT="scala3-repl-json-sjs"
-REPL_FASTOPT="scala3-repl-json-fastopt"
+REPL_OPT="scala3-repl-json-opt"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" >& /dev/null && pwd)/common-repl-js"

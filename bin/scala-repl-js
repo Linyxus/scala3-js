@@ -5,5 +5,5 @@
 # for the shared logic and rationale.
 
 REPL_PROJECT="scala3-repl-cli-sjs"
-REPL_FASTOPT="scala3-repl-cli-fastopt"
+REPL_OPT="scala3-repl-cli-opt"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" >& /dev/null && pwd)/common-repl-js"
