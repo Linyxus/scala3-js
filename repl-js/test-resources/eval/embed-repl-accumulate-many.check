@@ -1,3 +1,3 @@
 # Drive many lines programmatically and accumulate; complete with their sum.
->>> {"op":"eval","code":"val r = embedRepl[Int] { (ctx, s) => for (i <- 1 to 10) s.eval(s\"val v$i = $i\"); val total = s.eval[Int](\"v1+v2+v3+v4+v5+v6+v7+v8+v9+v10\"); s.complete(total) }"}
+>>> {"op":"eval","code":"val r = simpleRepl[Int] { s => for (i <- 1 to 10) s.eval(s\"val v$i = $i\"); val total = s.eval[Int](\"v1+v2+v3+v4+v5+v6+v7+v8+v9+v10\"); s.complete(total) }"}
 ~ "ok":true.*val r: Int = 55

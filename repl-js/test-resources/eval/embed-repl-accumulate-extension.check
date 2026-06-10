@@ -1,3 +1,3 @@
 # An extension method defined in one line applies in a later line.
->>> {"op":"eval","code":"val r = embedRepl[Int] { (ctx, s) => s.eval(\"extension (i: Int) def inc = i + 1\"); val v = s.eval[Int](\"41.inc\"); s.complete(v) }"}
+>>> {"op":"eval","code":"val r = simpleRepl[Int] { s => s.eval(\"extension (i: Int) def inc = i + 1\"); val v = s.eval[Int](\"41.inc\"); s.complete(v) }"}
 ~ "ok":true.*val r: Int = 42

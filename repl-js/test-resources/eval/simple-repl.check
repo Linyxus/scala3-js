@@ -1,7 +1,7 @@
 # simpleRepl: term-level stateful eval built on one-shot eval chaining plus
 # parser-stage line shaping (scala.runtime.eval.SimpleRepl +
 # SpliceEvalBody.shapeSimpleReplLine). Auto-imported into every REPL line like
-# eval/evalSafe/embedRepl. A line is any mix of definitions and statements;
+# eval/evalSafe. A line is any mix of definitions and statements;
 # its value is its trailing expression (typed against the call's type
 # argument) or () for definition-only lines.
 

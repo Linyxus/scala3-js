@@ -1,6 +1,6 @@
-# embedRepl works under capture checking (it and EvalSession are cc-clean).
+# simpleRepl works under capture checking (it and SimpleReplSession are cc-clean).
 >>> {"op":"eval","code":"import language.experimental.captureChecking"}
 ~ "ok":true
 
->>> {"op":"eval","code":"val r = embedRepl[Int] { (ctx, s) => s.eval(\"val x = 10\"); val v = s.eval[Int](\"x * 2\"); s.complete(v) }"}
+>>> {"op":"eval","code":"val r = simpleRepl[Int] { s => s.eval(\"val x = 10\"); val v = s.eval[Int](\"x * 2\"); s.complete(v) }"}
 ~ "ok":true.*val r: Int = 20

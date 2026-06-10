@@ -3,5 +3,5 @@
 >>> {"op":"eval","code":"import language.experimental.safe"}
 ~ "ok":true
 
->>> {"op":"eval","code":"val r = embedRepl[String] { (ctx, s) => val v = s.eval[String](\"(1: Any).asInstanceOf[String]\"); s.complete(v) }"}
+>>> {"op":"eval","code":"val r = simpleRepl[String] { s => val v = s.eval[String](\"(1: Any).asInstanceOf[String]\"); s.complete(v) }"}
 ~ "ok":false.*(asInstanceOf|rejectSafe|safe)

@@ -1,13 +1,13 @@
-# embedRepl is generic in the result type R; complete carries an R.
->>> {"op":"eval","code":"val s1 = embedRepl[String] { (ctx, s) => s.complete(\"hi\") }"}
+# simpleRepl is generic in the result type R; complete carries an R.
+>>> {"op":"eval","code":"val s1 = simpleRepl[String] { s => s.complete(\"hi\") }"}
 ~ "ok":true.*val s1: String = .*hi
 
->>> {"op":"eval","code":"val l1 = embedRepl[List[Int]] { (ctx, s) => s.complete(List(1, 2, 3)) }"}
+>>> {"op":"eval","code":"val l1 = simpleRepl[List[Int]] { s => s.complete(List(1, 2, 3)) }"}
 ~ "ok":true.*val l1: List\[Int\] = List\(1, 2, 3\)
 
->>> {"op":"eval","code":"val o1 = embedRepl[Option[Int]] { (ctx, s) => s.complete(Some(7)) }"}
+>>> {"op":"eval","code":"val o1 = simpleRepl[Option[Int]] { s => s.complete(Some(7)) }"}
 ~ "ok":true.*val o1: Option\[Int\] = Some\(7\)
 
 # Unit result (rendering of a Unit val is suppressed; just assert success).
->>> {"op":"eval","code":"val u1 = embedRepl[Unit] { (ctx, s) => s.complete(()) }"}
+>>> {"op":"eval","code":"val u1 = simpleRepl[Unit] { s => s.complete(()) }"}
 ~ "ok":true

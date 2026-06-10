@@ -64,7 +64,8 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
     expressionAppended = false
     val parsedBody = shapeSimpleReplLine(parseBody)
     val expressionClass = parseExpressionClass
-    val splicer = new Splicer(parsedBody, expressionClass)
+    val chainDefs = chainClassDefsFor(parsedBody, ctx.compilationUnit.untpdTree)
+    val splicer = new Splicer(parsedBody, expressionClass, chainDefs)
     ctx.compilationUnit.untpdTree = splicer.transform(ctx.compilationUnit.untpdTree)
     if !spliced && config.testMode then
       report.error(
@@ -158,6 +159,81 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
       case Apply(fn, Nil) if isEndLinePath(fn) => Some(None)
       case _ => None
 
+  /** Class-like definitions (`class`/`case class`/`enum`/`trait`/`object`) in
+   *  chain blocks enclosing the marker that the body references by simple
+   *  name. They are *moved* out of the chain and re-elaborated inside the
+   *  spliced body, where they are local to `__evalResult` and follow the
+   *  proven same-line extraction path — a block-local class left in the kept
+   *  chain wrapper cannot be referenced from `evaluate()` (lambdaLift cannot
+   *  lift across the two top-level classes). The cost is per-line identity:
+   *  each line that uses a chain class compiles (and, for an `object`,
+   *  re-initialises) its own copy — the term-level session's documented
+   *  semantics for type definitions.
+   *
+   *  Names the body defines itself are skipped (the body's own definition
+   *  shadows the chain's); for a name defined by several chain levels the
+   *  innermost wins. A chain definition that is hoisted away from a sibling
+   *  that still references it leaves that sibling dangling — such mixed lines
+   *  fail to type (a clear error where leaving the class in place would ICE
+   *  in lambdaLift). */
+  private def chainClassDefsFor(body: Tree, unitTree: Tree)(using Context): List[Tree] =
+    val refNames = collectIdentNames(body)
+    if refNames.isEmpty then return Nil
+    val ownNames = topLevelDefNames(body)
+    var spine: List[List[Tree]] = Nil // innermost-first snapshot at the marker
+    val finder = new UntypedTreeTraverser:
+      private var enclosing: List[List[Tree]] = Nil
+      def traverse(tree: Tree)(using Context): Unit = tree match
+        case id: Ident if id.name.toString == config.marker =>
+          spine = enclosing
+        case Block(stats, expr) =>
+          enclosing = stats.filter(isClassLikeDef) :: enclosing
+          stats.foreach(traverse)
+          traverse(expr)
+          enclosing = enclosing.tail
+        case _ => traverseChildren(tree)
+    finder.traverse(unitTree)
+    val seen = scala.collection.mutable.Set.empty[Name]
+    val chosenRev = spine.flatMap { levelDefs => // innermost level first
+      levelDefs.reverse.filter { d =>
+        val n = defName(d).toTermName
+        refNames(n) && !ownNames(n) && seen.add(n)
+      }
+    }
+    chosenRev.reverse // outermost-first, so inner re-definitions land later
+
+  private def isClassLikeDef(tree: Tree): Boolean = tree match
+    case td: TypeDef => td.isClassDef
+    case _: ModuleDef => true
+    case _ => false
+
+  private def defName(tree: Tree): Name = tree match
+    case td: TypeDef => td.name
+    case md: ModuleDef => md.name
+    case _ => nme.EMPTY
+
+  /** Every `Ident` name occurring in `tree`, normalised to term names. */
+  private def collectIdentNames(tree: Tree)(using Context): Set[Name] =
+    val names = scala.collection.mutable.Set.empty[Name]
+    val tr = new UntypedTreeTraverser:
+      def traverse(t: Tree)(using Context): Unit = t match
+        case id: Ident => names += id.name.toTermName
+        case _ => traverseChildren(t)
+    tr.traverse(tree)
+    names.toSet
+
+  /** Names the body's top-level statements define themselves. */
+  private def topLevelDefNames(body: Tree): Set[Name] =
+    body match
+      case Block(stats, _) =>
+        stats.collect {
+          case td: TypeDef => td.name.toTermName
+          case md: ModuleDef => md.name.toTermName
+          case vd: ValDef if !vd.name.isEmpty => vd.name.toTermName
+          case dd: DefDef if dd.name != nme.CONSTRUCTOR && !dd.name.isEmpty => dd.name.toTermName
+        }.toSet
+      case _ => Set.empty
+
   /** Strip `Apply(Ident(name), Nil)` → `Ident(name)` for any name in
    *  `parenless`, so the body can reference a parens-omitted sibling `def g = 42`
    *  as either `g` or `g()`. */
@@ -169,7 +245,9 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
         case _ => super.transform(tree)
     rewriter.transform(body)
 
-  private class Splicer(body: Tree, expressionClass: Seq[Tree]) extends UntypedTreeMap:
+  private class Splicer(body: Tree, expressionClass: Seq[Tree], chainDefs: List[Tree]) extends UntypedTreeMap:
+    private def isChainDef(t: Tree): Boolean = chainDefs.exists(_ eq t)
+
     override def transform(tree: Tree)(using Context): Tree =
       tree match
         case pkg: PackageDef =>
@@ -197,24 +275,7 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
           val effectiveBody =
             if parenslessDefNames.isEmpty then body
             else stripEmptyApplyFor(body, parenslessDefNames)
-          val bodyTermNames = topLevelTermNames(effectiveBody)
-          val sessionAliases =
-            if !config.sessionLine then Nil
-            else stats.collect {
-              case vd: ValDef if isPriorLineAlias(vd) && !bodyTermNames(vd.name) => vd
-            }
-          val sessionLineValues =
-            if !config.sessionLine then Nil
-            else stats.collect {
-              case vd: ValDef if isPriorLineValue(vd) => vd
-            }
-          val sessionImports =
-            if !config.sessionLine then Nil
-            else stats.collect {
-              case imp: Import if isPriorLineImport(imp) => imp
-            }
-          val hoistedStats: List[Tree] =
-            givens ++ sessionLineValues ++ sessionImports ++ sessionAliases
+          val hoistedStats: List[Tree] = chainDefs ++ givens
           val markerReplacement = mkExprBlock(effectiveBody, expr, hoistedStats)
           val keptStats = stats.filterNot(s => hoistedStats.exists(_ eq s))
           if keptStats.isEmpty then markerReplacement
@@ -222,7 +283,13 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
 
         // Marker found at expression position.
         case id: Ident if id.name.toString == config.marker =>
-          mkExprBlock(body, id)
+          mkExprBlock(body, id, chainDefs)
+
+        // A chain block on the marker spine some of whose class-like definitions
+        // were hoisted into the body: drop them here (their hoisted copies are
+        // the definitions now).
+        case bk @ Block(stats, expr) if stats.exists(isChainDef) =>
+          cpy.Block(bk)(stats.filterNot(isChainDef).map(transform), transform(expr))
 
         case _ => super.transform(tree)
 
@@ -252,28 +319,6 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
        |  def evaluate(): Any = ()
       |}
       |""".stripMargin
-
-  private def topLevelTermNames(tree: Tree): Set[Name] =
-    tree match
-      case Block(stats, _) =>
-        stats.collect {
-          case vd: ValDef if !vd.name.isEmpty => vd.name
-          case dd: DefDef if dd.name != nme.CONSTRUCTOR && !dd.name.isEmpty => dd.name
-        }.toSet
-      case _ => Set.empty
-
-  private def isPriorLineAlias(tree: ValDef)(using Context): Boolean =
-    tree.rhs match
-      case Select(Ident(name), _) => name.toString.startsWith("__line")
-      case _ => false
-
-  private def isPriorLineValue(tree: ValDef): Boolean =
-    tree.name.toString.startsWith("__line")
-
-  private def isPriorLineImport(tree: Import): Boolean =
-    tree.expr match
-      case Ident(name) => name.toString.startsWith("__line")
-      case _ => false
 
   /** Build the splice block for the marker site:
    *  ```

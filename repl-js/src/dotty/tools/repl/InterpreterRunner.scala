@@ -110,11 +110,6 @@ class InterpreterRunner:
     org.scalajs.sjsirinterpreter.core.EvalSupport.instantiateAndRun(
       interp, expressionClassName, bindings)
 
-  /** Like [[instantiateEval]], but also returns the retained expression instance. */
-  def instantiateEvalAndKeep(expressionClassName: String, bindings: Any): (Any, Any) =
-    org.scalajs.sjsirinterpreter.core.EvalSupport.instantiateAndKeep(
-      interp, expressionClassName, bindings)
-
 object InterpreterRunner:
 
   /** Parse a packed `*.bin` archive (4-byte index length, JSON index, data) into

@@ -13,26 +13,12 @@ package scala.runtime.eval
  */
 final class EvalContext(
     val enclosingSource: String,
-    val bindings: Array[Eval.Binding],
-    private[eval] val embedReplState: EmbedReplState | Null = null
+    val bindings: Array[Eval.Binding]
 ):
   /** The string the rewriter substituted into `enclosingSource` at the eval
    *  call's location. Splice generated code with
    *  `enclosingSource.replace(placeholder, generated)`. */
   def placeholder: String = EvalContext.placeholder
-
-  /** Number of lines attempted in the enclosing [[Eval.embedRepl]] session, or
-   *  `0` for ordinary one-shot eval contexts. */
-  def attempts: Int =
-    if embedReplState == null then 0 else embedReplState.attempts
-
-  /** History of lines attempted in the enclosing [[Eval.embedRepl]] session, oldest first. */
-  def history: List[EvalAttempt] =
-    if embedReplState == null then Nil else embedReplState.history
-
-  /** Most recent compile error reported by `EvalSession.evalSafe`, if any. */
-  def lastError: Option[Array[String]] =
-    if embedReplState == null then None else embedReplState.lastError
 
   override def toString: String =
     s"EvalContext(enclosingSource=${enclosingSource.length} chars, bindings=${bindings.length})"

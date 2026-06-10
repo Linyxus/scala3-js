@@ -131,28 +131,6 @@ object Eval:
 
   // --- public entry points ---------------------------------------------------
 
-  /** Open a stateful embedded REPL session. The body must exit through
-   *  `session.complete(value)`, which breaks to this boundary and returns `value`.
-   *
-   *  Like the `eval[T](gen)` generator form, the session's [[EvalContext]] is
-   *  given the call site's surrounding source and captured locals: the rewriter
-   *  (`EvalRewriteTyped`) fills `bindings` and `enclosingSource` from the
-   *  `embedRepl(...)` call site, and they back `session.ctx` so the body can read
-   *  `ctx.enclosingSource` / `ctx.bindings`. `expectedType` (the rendered `R`) is
-   *  filled for symmetry with the eval surface; direct callers leave all three at
-   *  their defaults. */
-  def embedRepl[R](
-      body: (EvalContext, EvalSession[R]) => Nothing,
-      bindings: Array[Binding] = Array.empty[Binding],
-      expectedType: String = "",
-      enclosingSource: String = ""
-  ): R =
-    scala.util.boundary[R]:
-      import caps.unsafe.unsafeAssumePure
-      val session = new EvalSession[R](
-        summon[scala.util.boundary.Label[R]], bindings, enclosingSource)
-      body(session.ctx, session.unsafeAssumePure)
-
   /** Compile and run `code` against the current REPL session, returning `T`.
    *
    *  The defaulted parameters are normally filled by the `EvalRewriteTyped`

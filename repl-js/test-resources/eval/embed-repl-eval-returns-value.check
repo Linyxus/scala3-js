@@ -1,15 +1,15 @@
 # s.eval returns the value of its last expression (typed by [T]).
->>> {"op":"eval","code":"val r = embedRepl[Int] { (ctx, s) => val v = s.eval[Int](\"3 + 4\"); s.complete(v) }"}
+>>> {"op":"eval","code":"val r = simpleRepl[Int] { s => val v = s.eval[Int](\"3 + 4\"); s.complete(v) }"}
 ~ "ok":true.*val r: Int = 7
 
 # A bare expression line, value passed straight to complete.
->>> {"op":"eval","code":"val r2 = embedRepl[Int] { (ctx, s) => s.complete(s.eval[Int](\"21 * 2\")) }"}
+>>> {"op":"eval","code":"val r2 = simpleRepl[Int] { s => s.complete(s.eval[Int](\"21 * 2\")) }"}
 ~ "ok":true.*val r2: Int = 42
 
 # A line that is a block with a trailing expression.
->>> {"op":"eval","code":"val r3 = embedRepl[Int] { (ctx, s) => val v = s.eval[Int](\"val a = 2; a * 3\"); s.complete(v) }"}
+>>> {"op":"eval","code":"val r3 = simpleRepl[Int] { s => val v = s.eval[Int](\"val a = 2; a * 3\"); s.complete(v) }"}
 ~ "ok":true.*val r3: Int = 6
 
 # A pure-definition line has value Unit.
->>> {"op":"eval","code":"val r4 = embedRepl[Int] { (ctx, s) => val u: Unit = s.eval[Unit](\"val q = 1\"); s.complete(if (u == ()) 100 else 0) }"}
+>>> {"op":"eval","code":"val r4 = simpleRepl[Int] { s => val u: Unit = s.eval[Unit](\"val q = 1\"); s.complete(if (u == ()) 100 else 0) }"}
 ~ "ok":true.*val r4: Int = 100

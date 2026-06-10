@@ -1,5 +1,5 @@
 # The motivating case: the eval'd code itself calls `s.complete`. `s` is captured
-# from the body (call-site capture), so the nested code reaches it; the Break it
-# throws propagates out through s.eval to the embedRepl boundary.
->>> {"op":"eval","code":"val r = embedRepl[Int] { (ctx, s) => s.eval(\"s.complete(42)\") }"}
+# from the body (call-site capture), so the nested code reaches it; the completion it
+# throws propagates out through s.eval to the simpleRepl boundary.
+>>> {"op":"eval","code":"val r = simpleRepl[Int] { s => s.eval(\"s.complete(42)\") }"}
 ~ "ok":true.*val r: Int = 42

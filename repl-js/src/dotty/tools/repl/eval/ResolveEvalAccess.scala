@@ -14,10 +14,17 @@ import dotty.tools.dotc.core.Types.*
 import dotty.tools.dotc.report
 import dotty.tools.dotc.transform.MegaPhase.MiniPhase
 
-/** Lowers each `reflectEval(...)` placeholder in `__Expression.evaluate` to a
- *  concrete accessor call on the [[scala.runtime.eval.EvalExpressionBase]]
- *  helpers, picked by the [[ReflectEvalStrategy]] attachment. Runs after erasure
- *  so cast types match the JVM-level shapes the helpers operate on. */
+/** Lowers each `reflectEval(...)` placeholder to a concrete accessor call on
+ *  the [[scala.runtime.eval.EvalExpressionBase]] helpers, picked by the
+ *  [[ReflectEvalStrategy]] attachment. Runs after erasure so cast types match
+ *  the JVM-level shapes the helpers operate on.
+ *
+ *  Lowering hooks every `Apply` rather than scanning `__Expression.evaluate`:
+ *  by this point `lambdaLift`/`flatten` have moved body-local classes (and
+ *  their placeholder-bearing methods) out of `evaluate` — for those,
+ *  `lambdaLift` has already rewritten the placeholder's `__Expression.this`
+ *  qualifier into the lifted class's captured outer reference, which the
+ *  generated accessor call simply reuses. */
 private[eval] class ResolveEvalAccess(config: EvalCompilerConfig, store: EvalStore)
   extends MiniPhase:
 
@@ -25,53 +32,43 @@ private[eval] class ResolveEvalAccess(config: EvalCompilerConfig, store: EvalSto
 
   private val reflectEvalName: TermName = termName("reflectEval")
 
-  override def transformTypeDef(tree: TypeDef)(using Context): Tree =
-    if tree.symbol == config.expressionClass then
-      ExpressionTransformer.transform(tree)
-    else tree
+  override def transformApply(tree: Apply)(using Context): Tree =
+    if !isReflectEval(tree.fun.symbol) then tree
+    else
+      // Children are already transformed (MiniPhase runs bottom-up), so nested
+      // placeholders inside the qualifier/args are lowered by their own visit.
+      val qualifier = tree.args(0)
+      val args = tree.args(2).asInstanceOf[JavaSeqLiteral].elems
+      val gen = new Gen(tree)
+      tree.attachment(ReflectEvalStrategy) match
+        case ReflectEvalStrategy.LocalValue(variable, _) =>
+          gen.getValue(variable.originalName.toString)
 
-  private object ExpressionTransformer extends TreeMap:
-    override def transform(tree: Tree)(using Context): Tree =
-      tree match
-        case tree: DefDef if tree.symbol == config.evaluateMethod =>
-          cpy.DefDef(tree)(rhs = transform(tree.rhs))
+        case ReflectEvalStrategy.LocalValueAssign(variable) =>
+          val ref = gen.getRaw(variable.originalName.toString)
+          gen.varRefSet(ref, args.head)
 
-        case reflectEval: Apply if isReflectEval(reflectEval.fun.symbol) =>
-          val qualifier = transform(reflectEval.args(0))
-          val args = reflectEval.args(2).asInstanceOf[JavaSeqLiteral].elems.map(transform)
-          val gen = new Gen(reflectEval)
-          reflectEval.attachment(ReflectEvalStrategy) match
-            case ReflectEvalStrategy.LocalValue(variable, _) =>
-              gen.getValue(variable.originalName.toString)
+        case ReflectEvalStrategy.This(_) =>
+          gen.getThisObject
 
-            case ReflectEvalStrategy.LocalValueAssign(variable) =>
-              val ref = gen.getRaw(variable.originalName.toString)
-              gen.varRefSet(ref, args.head)
+        case ReflectEvalStrategy.Outer(outerCls) =>
+          gen.getOuter(qualifier, outerCls)
 
-            case ReflectEvalStrategy.This(_) =>
-              gen.getThisObject
+        case ReflectEvalStrategy.Field(field, _, useReceiverClass) =>
+          val getter = field.getter
+          if getter.exists then gen.callMethod(qualifier, getter.asTerm, Nil, useReceiverClass)
+          else gen.getField(qualifier, field, useReceiverClass)
 
-            case ReflectEvalStrategy.Outer(outerCls) =>
-              gen.getOuter(qualifier, outerCls)
+        case ReflectEvalStrategy.FieldAssign(field, useReceiverClass) =>
+          val setter = field.setter
+          if setter.exists then gen.callMethod(qualifier, setter.asTerm, args, useReceiverClass)
+          else gen.setField(qualifier, field, args.head, useReceiverClass)
 
-            case ReflectEvalStrategy.Field(field, _, useReceiverClass) =>
-              val getter = field.getter
-              if getter.exists then gen.callMethod(qualifier, getter.asTerm, Nil, useReceiverClass)
-              else gen.getField(qualifier, field, useReceiverClass)
+        case ReflectEvalStrategy.MethodCall(method, useReceiverClass) =>
+          gen.callMethod(qualifier, method, args, useReceiverClass)
 
-            case ReflectEvalStrategy.FieldAssign(field, useReceiverClass) =>
-              val setter = field.setter
-              if setter.exists then gen.callMethod(qualifier, setter.asTerm, args, useReceiverClass)
-              else gen.setField(qualifier, field, args.head, useReceiverClass)
-
-            case ReflectEvalStrategy.MethodCall(method, useReceiverClass) =>
-              gen.callMethod(qualifier, method, args, useReceiverClass)
-
-            case ReflectEvalStrategy.MethodCapture(_, method, _) =>
-              gen.applyCapturedFunction(method.originalName.toString, args)
-
-        case _ => super.transform(tree)
-  end ExpressionTransformer
+        case ReflectEvalStrategy.MethodCapture(_, method, _) =>
+          gen.applyCapturedFunction(method.originalName.toString, args)
 
   private def isReflectEval(sym: Symbol)(using Context): Boolean =
     sym.exists && sym.name == reflectEvalName &&
