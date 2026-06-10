@@ -1,8 +1,8 @@
-# Nested simpleRepl: the inner simpleRepl session completes and the outer uses its result.
->>> {"op":"eval","code":"val r = simpleRepl[Int] { s => val inner = simpleRepl[Int] { s2 => s2.complete(5) }; s.complete(inner * 2) }"}
+# Nested embedRepl: the inner embedRepl session completes and the outer uses its result.
+>>> {"op":"eval","code":"val r = embedRepl[Int] { s => val inner = embedRepl[Int] { s2 => s2.complete(5) }; s.complete(inner * 2) }"}
 ~ "ok":true.*val r: Int = 10
 
 # Inner and outer sessions have independent environments: a def in the inner
 # session is not visible in the outer.
->>> {"op":"eval","code":"val r2 = simpleRepl[Int] { s => simpleRepl[Int] { s2 => s2.eval(\"val x = 1\"); s2.complete(0) }; s.complete(s.eval[Int](\"x\")) }"}
+>>> {"op":"eval","code":"val r2 = embedRepl[Int] { s => embedRepl[Int] { s2 => s2.eval(\"val x = 1\"); s2.complete(0) }; s.complete(s.eval[Int](\"x\")) }"}
 ~ "ok":false

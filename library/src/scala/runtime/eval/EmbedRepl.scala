@@ -8,7 +8,7 @@ import scala.language.experimental.captureChecking
  *  mechanism — no compiler or driver support beyond what `eval` already has.
  *
  *  {{{
- *  val r = simpleRepl[Int] { s =>
+ *  val r = embedRepl[Int] { s =>
  *    s.eval("val x = 10")                 // statement line: definitions, no value
  *    s.eval("val y = x + 5")
  *    s.complete(s.eval[Int]("x + y"))     // value line: 25
@@ -22,18 +22,18 @@ import scala.language.experimental.captureChecking
  *
  *  {{{
  *  <code>
- *  SimpleRepl.endLine[T]()      // fully qualified; [T] when the call gave one
+ *  EmbedRepl.endLine[T]()      // fully qualified; [T] when the call gave one
  *  }}}
  *
  *  A statement always parses, whatever shape `code` has. The eval compile's
- *  parser-stage phase (`SpliceEvalBody.shapeSimpleReplLine`) then rewrites the
+ *  parser-stage phase (`SpliceEvalBody.shapeEmbedReplLine`) then rewrites the
  *  parsed block into the real tail — REPL line semantics decided on the tree,
  *  not by string surgery:
  *
  *  {{{
  *  <stats minus a trailing expression>
- *  val __simpleReplLineValue__[: T] = <trailing expression | ()>
- *  throw new SimpleReplEnd(SimpleRepl.captureState(), __simpleReplLineValue__)
+ *  val __embedReplLineValue__[: T] = <trailing expression | ()>
+ *  throw new EmbedReplEnd(EmbedRepl.captureState(), __embedReplLineValue__)
  *  }}}
  *
  *  So a line is any mix of definitions and statements; its value is its
@@ -59,12 +59,12 @@ import scala.language.experimental.captureChecking
  *  reference and instantiate them — but runtime class identity is per-line
  *  (an instance created by an earlier line is not an instance of a later
  *  line's re-elaborated class, and a stateful `object` is re-initialised in
- *  each line that uses it). Locals of the `simpleRepl { s => ... }` lambda
+ *  each line that uses it). Locals of the `embedRepl { s => ... }` lambda
  *  itself are not visible inside lines (the chain is rooted at the
- *  `simpleRepl` call site); locals of the *enclosing statement* are. The one
+ *  `embedRepl` call site); locals of the *enclosing statement* are. The one
  *  exception is the session handle itself: every call-site name bound to it
  *  is grafted into the chain on first use
- *  ([[SimpleReplSession.injectSelfNames]]), so lines can drive their own
+ *  ([[EmbedReplSession.injectSelfNames]]), so lines can drive their own
  *  session — `s.eval("s.complete(x + 1)")` completes it from inside a line.
  *
  *  Tagged `@caps.assumeSafe` like [[Eval]] so safe-mode user code can open
@@ -72,7 +72,7 @@ import scala.language.experimental.captureChecking
  *  under the live session's flags.
  */
 @caps.assumeSafe
-object SimpleRepl:
+object EmbedRepl:
 
   /** Open a session. The body must exit through `s.complete(value)`; the
    *  defaulted parameters are filled by the `@evalLike` rewriter from the call
@@ -82,10 +82,10 @@ object SimpleRepl:
    *  every spliced line types as `Nothing` (the tail throws), and without the
    *  ascription that `Nothing` would infect later uses of the call's result in
    *  the same statement during a line's verify compile (e.g.
-   *  `val n = simpleRepl[Int] {…}; n + 1`). */
+   *  `val n = embedRepl[Int] {…}; n + 1`). */
   @evalLike
-  def simpleRepl[R](
-      body: SimpleReplSession[R] => Nothing,
+  def embedRepl[R](
+      body: EmbedReplSession[R] => Nothing,
       bindings: Array[Eval.Binding] = Array.empty[Eval.Binding],
       expectedType: String = "",
       enclosingSource: String = ""
@@ -96,10 +96,10 @@ object SimpleRepl:
         enclosingSource.replace(
           EvalContext.placeholder,
           s"((${EvalContext.placeholder}): $expectedType)")
-    val session = new SimpleReplSession[R](bindings, rootEnclosing, expectedType)
+    val session = new EmbedReplSession[R](bindings, rootEnclosing, expectedType)
     try body(session)
     catch
-      case e: SimpleReplComplete if e.owner eq session => e.value.asInstanceOf[R]
+      case e: EmbedReplComplete if e.owner eq session => e.value.asInstanceOf[R]
 
   /** Session-tail hook: re-packages the current scope as the next state. Only
    *  meaningful inside an eval compile, where the rewriter fills `bindings`
@@ -111,22 +111,22 @@ object SimpleRepl:
       bindings: Array[Eval.Binding] = Array.empty[Eval.Binding],
       expectedType: String = "",
       enclosingSource: String = ""
-  ): SimpleReplState =
-    new SimpleReplState(bindings, enclosingSource)
+  ): EmbedReplState =
+    new EmbedReplState(bindings, enclosingSource)
 
-  /** Line-tail sentinel appended by [[SimpleReplSession.eval]] and replaced at
+  /** Line-tail sentinel appended by [[EmbedReplSession.eval]] and replaced at
    *  parse time by `SpliceEvalBody`'s session-line shaping (the two must agree
    *  on this fully-qualified name). If it survives to runtime the line could
    *  not be shaped — its code ends in an unfinished construct that swallowed
    *  the appended sentinel. */
   def endLine[T](): Nothing =
     throw new IllegalStateException(
-      "simpleRepl: the line tail was not shaped — "
+      "embedRepl: the line tail was not shaped — "
         + "the line's code likely ends in an unfinished construct")
 
-end SimpleRepl
+end EmbedRepl
 
-/** One attempted line in a [[SimpleRepl.simpleRepl]] session.
+/** One attempted line in a [[EmbedRepl.embedRepl]] session.
  *
  *  `result` is `Right(renderedValue)` on success and `Left(errors)` on a
  *  compile-time failure of that line. Runtime exceptions propagate and are not
@@ -137,9 +137,9 @@ final case class EvalAttempt(code: String, result: Either[Array[String], String]
 
 /** Carrier for one captured session step: the bindings and the chain source
  *  whose marker is the next line's splice point. Constructed by
- *  [[SimpleRepl.captureState]] inside eval'd code. */
+ *  [[EmbedRepl.captureState]] inside eval'd code. */
 @caps.assumeSafe
-final class SimpleReplState(
+final class EmbedReplState(
     val bindings: Array[Eval.Binding],
     val enclosingSource: String
 )
@@ -150,24 +150,24 @@ final class SimpleReplState(
  *  shaped tail is part of the line compile, which is safe-checked in a
  *  safe-mode session). Stack trace suppressed — this fires on every line. */
 @caps.assumeSafe
-final class SimpleReplEnd(val state: SimpleReplState, val value: Any)
+final class EmbedReplEnd(val state: EmbedReplState, val value: Any)
     extends Throwable(null, null, false, false)
 
-/** Control-flow carrier for [[SimpleReplSession.complete]]. `owner` identifies
- *  the session so nested `simpleRepl`s route completion to the right boundary.
+/** Control-flow carrier for [[EmbedReplSession.complete]]. `owner` identifies
+ *  the session so nested `embedRepl`s route completion to the right boundary.
  *  Stack trace suppressed. */
 @caps.assumeSafe
-final class SimpleReplComplete(val owner: AnyRef, val value: Any)
+final class EmbedReplComplete(val owner: AnyRef, val value: Any)
     extends Throwable(null, null, false, false)
 
-/** The handle passed to the `simpleRepl` body: a mutable cursor over the
+/** The handle passed to the `embedRepl` body: a mutable cursor over the
  *  session's eval context. */
 @caps.assumeSafe
-final class SimpleReplSession[R] private[eval] (
+final class EmbedReplSession[R] private[eval] (
     initialBindings: Array[Eval.Binding],
     initialEnclosingSource: String,
     /** Source rendering of the session's result type `R`, as filled by the
-     *  rewriter at the `simpleRepl` call site ("" when unknown). */
+     *  rewriter at the `embedRepl` call site ("" when unknown). */
     val expectedType: String
 ):
   private var myBindings: Array[Eval.Binding] = initialBindings
@@ -176,7 +176,7 @@ final class SimpleReplSession[R] private[eval] (
   private var myHistoryRev: List[EvalAttempt] = Nil
   private var myLastError: Option[Array[String]] = None
 
-  /** The bindings currently in scope for the next line: the `simpleRepl` call
+  /** The bindings currently in scope for the next line: the `embedRepl` call
    *  site's captures plus everything session lines have defined so far. */
   def bindings: Array[Eval.Binding] = myBindings
 
@@ -199,14 +199,14 @@ final class SimpleReplSession[R] private[eval] (
    *  declarations of the handle ([[injectSelfNames]]). */
   private def selfTypeSource: String =
     val r = if expectedType.isEmpty then "?" else expectedType
-    s"_root_.scala.runtime.eval.SimpleReplSession[$r]"
+    s"_root_.scala.runtime.eval.EmbedReplSession[$r]"
 
   /** Make this session handle visible inside lines, under every name the
    *  *call site* knows it by.
    *
-   *  The chain is rooted at the `simpleRepl` call site, where the marker
+   *  The chain is rooted at the `embedRepl` call site, where the marker
    *  replaced the whole call — lambda included — so the body's handle name
-   *  (e.g. the `ctx` of `simpleRepl { ctx => ... }`) is neither in the chain
+   *  (e.g. the `ctx` of `embedRepl { ctx => ... }`) is neither in the chain
    *  source nor in the root bindings. But `eval`'s own `@evalLike` fill
    *  captures the locals in scope at the `ctx.eval(...)` call, under their
    *  source names — including the handle itself. Each capture whose value
@@ -282,7 +282,7 @@ final class SimpleReplSession[R] private[eval] (
    *  cleanly distinguished from an `EvalCompileException` thrown *by* the
    *  running line (a nested eval's failure), which propagates unrecorded. A
    *  successful line never returns normally — its shaped tail throws
-   *  [[SimpleReplEnd]], which advances the session. */
+   *  [[EmbedReplEnd]], which advances the session. */
   private def runLine[T](
       code: String,
       callBindings: Array[Eval.Binding],
@@ -292,7 +292,7 @@ final class SimpleReplSession[R] private[eval] (
     val targ = if renderedT.isEmpty then "" else s"[$renderedT]"
     try
       Eval.evalSafe[Any](
-        code + "\n_root_.scala.runtime.eval.SimpleRepl.endLine" + targ + "()",
+        code + "\n_root_.scala.runtime.eval.EmbedRepl.endLine" + targ + "()",
         myBindings, "", myEnclosingSource) match
         case EvalResult.Failure(failure) =>
           myLastError = Some(failure.errors)
@@ -300,17 +300,17 @@ final class SimpleReplSession[R] private[eval] (
           EvalResult.failure(failure)
         case _ =>
           throw new IllegalStateException(
-            "simpleRepl: line finished without reaching the session tail")
+            "embedRepl: line finished without reaching the session tail")
     catch
-      case e: SimpleReplEnd =>
+      case e: EmbedReplEnd =>
         myBindings = e.state.bindings
         myEnclosingSource = e.state.enclosingSource
         myLastError = None
         myHistoryRev = EvalAttempt(code, Right(String.valueOf(e.value))) :: myHistoryRev
         EvalResult.success(e.value.asInstanceOf[T])
 
-  /** Exit the session: unwinds to the matching `simpleRepl` boundary, which
+  /** Exit the session: unwinds to the matching `embedRepl` boundary, which
    *  returns `v`. The accumulated state is discarded. */
-  def complete(v: R): Nothing = throw new SimpleReplComplete(this, v)
+  def complete(v: R): Nothing = throw new EmbedReplComplete(this, v)
 
-end SimpleReplSession
+end EmbedReplSession

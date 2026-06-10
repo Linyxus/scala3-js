@@ -1,14 +1,14 @@
-# A simpleRepl session's accumulated definitions are discarded on completion — they do not
+# A embedRepl session's accumulated definitions are discarded on completion — they do not
 # leak into the enclosing REPL session.
->>> {"op":"eval","code":"val r = simpleRepl[Int] { s => s.eval(\"val secret = 123\"); s.complete(0) }"}
+>>> {"op":"eval","code":"val r = embedRepl[Int] { s => s.eval(\"val secret = 123\"); s.complete(0) }"}
 ~ "ok":true.*val r: Int = 0
 
 >>> {"op":"eval","code":"secret"}
 ~ "ok":false
 
-# Two separate simpleRepl invocations share no state.
->>> {"op":"eval","code":"simpleRepl[Int] { s => s.eval(\"val only = 1\"); s.complete(0) }"}
+# Two separate embedRepl invocations share no state.
+>>> {"op":"eval","code":"embedRepl[Int] { s => s.eval(\"val only = 1\"); s.complete(0) }"}
 ~ "ok":true
 
->>> {"op":"eval","code":"val r2 = simpleRepl[Int] { s => s.complete(s.eval[Int](\"only\")) }"}
+>>> {"op":"eval","code":"val r2 = embedRepl[Int] { s => s.complete(s.eval[Int](\"only\")) }"}
 ~ "ok":false

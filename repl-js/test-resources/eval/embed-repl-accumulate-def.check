@@ -1,3 +1,3 @@
 # A `def` defined in one line is callable in a later line.
->>> {"op":"eval","code":"val r = simpleRepl[Int] { s => s.eval(\"def f(a: Int) = a + 1\"); val v = s.eval[Int](\"f(41)\"); s.complete(v) }"}
+>>> {"op":"eval","code":"val r = embedRepl[Int] { s => s.eval(\"def f(a: Int) = a + 1\"); val v = s.eval[Int](\"f(41)\"); s.complete(v) }"}
 ~ "ok":true.*val r: Int = 42

@@ -1,7 +1,7 @@
-# One-shot `eval` works inside an simpleRepl body, alongside `s.eval`.
->>> {"op":"eval","code":"val r = simpleRepl[Int] { s => val a = eval[Int](\"3 + 4\"); s.complete(a) }"}
+# One-shot `eval` works inside an embedRepl body, alongside `s.eval`.
+>>> {"op":"eval","code":"val r = embedRepl[Int] { s => val a = eval[Int](\"3 + 4\"); s.complete(a) }"}
 ~ "ok":true.*val r: Int = 7
 
 # A one-shot eval and a session line coexist in one body.
->>> {"op":"eval","code":"val r2 = simpleRepl[Int] { s => s.eval(\"val x = 10\"); val a = eval[Int](\"100\"); val b = s.eval[Int](\"x\"); s.complete(a + b) }"}
+>>> {"op":"eval","code":"val r2 = embedRepl[Int] { s => s.eval(\"val x = 10\"); val a = eval[Int](\"100\"); val b = s.eval[Int](\"x\"); s.complete(a + b) }"}
 ~ "ok":true.*val r2: Int = 110

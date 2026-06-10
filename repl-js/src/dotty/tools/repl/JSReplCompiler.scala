@@ -135,12 +135,12 @@ class JSReplPhase extends Phase:
         ImportSelector(Ident(termName("evalSafe")))
       )
     ).withSpan(span)
-    val simpleReplImport = Import(
-      dotted("scala", "runtime", "eval", "SimpleRepl"),
-      List(ImportSelector(Ident(termName("simpleRepl"))))
+    val embedReplImport = Import(
+      dotted("scala", "runtime", "eval", "EmbedRepl"),
+      List(ImportSelector(Ident(termName("embedRepl"))))
     ).withSpan(span)
 
-    val body = evalImport :: simpleReplImport :: (defs.stats ++ renderPushes(defs.stats) :+ replMain)
+    val body = evalImport :: embedReplImport :: (defs.stats ++ renderPushes(defs.stats) :+ replMain)
     val tmpl = Template(emptyConstructor, Nil, Nil, EmptyValDef, body)
     val module = ModuleDef(objectTermName, tmpl).withSpan(span)
     PackageDef(Ident(nme.EMPTY_PACKAGE), List(module))

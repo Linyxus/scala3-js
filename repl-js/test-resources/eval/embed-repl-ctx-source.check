@@ -1,14 +1,14 @@
-# The session carries the `simpleRepl(...)` call site's surrounding
+# The session carries the `embedRepl(...)` call site's surrounding
 # source (with the call replaced by the marker), just like the `eval(gen)` form —
 # so the embedded REPL body can introspect where it is embedded.
->>> {"op":"eval","code":"val src = simpleRepl[String] { s => s.complete(s.enclosingSource) }"}
+>>> {"op":"eval","code":"val src = embedRepl[String] { s => s.complete(s.enclosingSource) }"}
 ~ "ok":true.*__evalBodyPlaceholder__
 
-# The user's case: an simpleRepl nested in a `.map` sees the enclosing `.map(...)`.
->>> {"op":"eval","code":"val srcs = List(1, 2, 3).map(x => simpleRepl[Boolean](s => s.complete(s.enclosingSource.contains(\"map\"))))"}
+# The user's case: an embedRepl nested in a `.map` sees the enclosing `.map(...)`.
+>>> {"op":"eval","code":"val srcs = List(1, 2, 3).map(x => embedRepl[Boolean](s => s.complete(s.enclosingSource.contains(\"map\"))))"}
 ~ "ok":true.*List\(true, true, true\)
 
-# Call-site locals in scope at the simpleRepl call are captured into s.bindings;
+# Call-site locals in scope at the embedRepl call are captured into s.bindings;
 # here each iteration captures `x`, so every embedded REPL session sees exactly one binding.
->>> {"op":"eval","code":"val ns = List(1, 2, 3).map(x => simpleRepl[Int](s => s.complete(s.bindings.length)))"}
+>>> {"op":"eval","code":"val ns = List(1, 2, 3).map(x => embedRepl[Int](s => s.complete(s.bindings.length)))"}
 ~ "ok":true.*List\(1, 1, 1\)

@@ -2,5 +2,5 @@
 >>> {"op":"eval","code":"case class Box(n: Int)"}
 ~ "ok":true
 
->>> {"op":"eval","code":"val bx = simpleRepl[Box] { s => s.complete(Box(7)) }"}
+>>> {"op":"eval","code":"val bx = embedRepl[Box] { s => s.complete(Box(7)) }"}
 ~ "ok":true.*val bx: Box = Box\(7\)

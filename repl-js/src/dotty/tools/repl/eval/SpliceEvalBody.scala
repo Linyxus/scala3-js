@@ -62,7 +62,7 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
   protected def run(using Context): Unit =
     spliced = false
     expressionAppended = false
-    val parsedBody = shapeSimpleReplLine(parseBody)
+    val parsedBody = shapeEmbedReplLine(parseBody)
     val expressionClass = parseExpressionClass
     val chainDefs = chainClassDefsFor(parsedBody, ctx.compilationUnit.untpdTree)
     val splicer = new Splicer(parsedBody, expressionClass, chainDefs)
@@ -73,14 +73,14 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
         ctx.compilationUnit.untpdTree.srcPos
       )
 
-  /** Shape a simpleRepl session line. `SimpleReplSession.eval` appends the
-   *  sentinel statement `_root_.scala.runtime.eval.SimpleRepl.endLine[T]()`
+  /** Shape an embedRepl session line. `EmbedReplSession.eval` appends the
+   *  sentinel statement `_root_.scala.runtime.eval.EmbedRepl.endLine[T]()`
    *  (the `[T]` present when the call site's rendered type argument is) to the
    *  line's code; when the parsed body ends with it, rewrite the block to
    *  {{{
    *  <stats minus a trailing expression>
-   *  val __simpleReplLineValue__[: T] = <trailing expression | ()>
-   *  throw new SimpleReplEnd(SimpleRepl.captureState(), __simpleReplLineValue__)
+   *  val __embedReplLineValue__[: T] = <trailing expression | ()>
+   *  throw new EmbedReplEnd(EmbedRepl.captureState(), __embedReplLineValue__)
    *  }}}
    *  so the line's value is its trailing expression (typed against `T` when
    *  given) or `()` for definition-only lines — REPL semantics, decided on the
@@ -96,7 +96,7 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
    *  (e.g. a trailing `if c then`), it is not the block's result expression,
    *  no shaping happens, and the surviving `endLine` call fails loudly at
    *  runtime. */
-  private def shapeSimpleReplLine(body: Tree)(using Context): Tree = body match
+  private def shapeEmbedReplLine(body: Tree)(using Context): Tree = body match
     case bk @ Block(stats0, expr0) =>
       val (stats, expr) = unswallowTrailingLambda(stats0, expr0)
       endLineTypeArg(expr) match
@@ -105,17 +105,17 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
           val (front, trailing) =
             if stats.nonEmpty && stats.last.isTerm then (stats.init, Some(stats.last))
             else (stats, None)
-          val vName = termName("__simpleReplLineValue__")
+          val vName = termName("__embedReplLineValue__")
           val vDef = ValDef(
             vName,
             targ.getOrElse(TypeTree()),
             trailing.getOrElse(Literal(Constant(())).withSpan(span))
           ).withSpan(span)
           val capture =
-            Apply(selectFqn("scala.runtime.eval.SimpleRepl.captureState", span), Nil)
+            Apply(selectFqn("scala.runtime.eval.EmbedRepl.captureState", span), Nil)
               .withSpan(span)
           val excTpt =
-            Select(selectFqn("scala.runtime.eval", span), typeName("SimpleReplEnd"))
+            Select(selectFqn("scala.runtime.eval", span), typeName("EmbedReplEnd"))
               .withSpan(span)
           val exc = Apply(
             Select(New(excTpt).withSpan(span), nme.CONSTRUCTOR).withSpan(span),
@@ -144,7 +144,7 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
         (stats :+ cpy.Function(fn)(params, restoredBody), fexpr)
       case _ => (stats, expr)
 
-  /** Match `[_root_.]scala.runtime.eval.SimpleRepl.endLine[T]()`; `Some(targ)`
+  /** Match `[_root_.]scala.runtime.eval.EmbedRepl.endLine[T]()`; `Some(targ)`
    *  when it is the sentinel (with its optional explicit type-argument tree). */
   private def endLineTypeArg(tree: Tree): Option[Option[Tree]] =
     def path(t: Tree, acc: List[String]): List[String] = t match
@@ -153,7 +153,7 @@ private[eval] class SpliceEvalBody(config: EvalCompilerConfig) extends Phase:
       case _ => "<non-path>" :: acc
     def isEndLinePath(t: Tree): Boolean =
       path(t, Nil).takeRight(5) ==
-        List("scala", "runtime", "eval", "SimpleRepl", "endLine")
+        List("scala", "runtime", "eval", "EmbedRepl", "endLine")
     tree match
       case Apply(TypeApply(fn, targ :: Nil), Nil) if isEndLinePath(fn) => Some(Some(targ))
       case Apply(fn, Nil) if isEndLinePath(fn) => Some(None)

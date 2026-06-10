@@ -3,5 +3,5 @@
 >>> {"op":"eval","code":"val n = 100"}
 ~ "ok":true
 
->>> {"op":"eval","code":"val r = simpleRepl[Int] { s => val v = s.eval[Int](\"n + 1\"); s.complete(v) }"}
+>>> {"op":"eval","code":"val r = embedRepl[Int] { s => val v = s.eval[Int](\"n + 1\"); s.complete(v) }"}
 ~ "ok":true.*val r: Int = 101

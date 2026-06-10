@@ -1,12 +1,12 @@
 # R is inferred from the expected type at the call site.
->>> {"op":"eval","code":"val r: Int = simpleRepl { s => s.complete(5) }"}
+>>> {"op":"eval","code":"val r: Int = embedRepl { s => s.complete(5) }"}
 ~ "ok":true.*val r: Int = 5
 
 # Inferred in a typed argument position.
->>> {"op":"eval","code":"val xs: List[Int] = List(simpleRepl { s => s.complete(1) })"}
+>>> {"op":"eval","code":"val xs: List[Int] = List(embedRepl { s => s.complete(1) })"}
 ~ "ok":true.*val xs: List\[Int\] = List\(1\)
 
 # With no expected type and no [R], the compiler is allowed to fall back to its
 # natural inferred result type for the call.
->>> {"op":"eval","code":"simpleRepl { s => s.complete(1) }"}
+>>> {"op":"eval","code":"embedRepl { s => s.complete(1) }"}
 ~ "ok":true.*= 1
