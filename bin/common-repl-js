@@ -5,6 +5,10 @@
 # then `source`s this file, which builds, locates artifacts, and execs node with
 # the caller's own arguments ("$@").
 #
+# Extra libraries (packed .bin archives produced by the packLibBin sbt task) can
+# be preloaded into the session: pass `--classpath a.bin:b.bin` (forwarded to
+# the REPL main via "$@") or export DOTTY_EXTRA_LIBS_BIN with the same syntax.
+#
 #   REPL_PROJECT   sbt project that links the front-end main.js
 #                  (e.g. scala3-repl-cli-sjs / scala3-repl-json-sjs)
 #   REPL_OPT       name of its fullopt output subdir

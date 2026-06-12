@@ -63,6 +63,7 @@ object Build {
   val bundleLibs = taskKey[File]("Bundle JDK, scala-library, and scala3-library class files next to main.js")
   val packClasspath = taskKey[File]("Pack all classpath files into a single classpath.bin archive")
   val packLinkerLibs = taskKey[File]("Pack .sjsir library files into linker-libs.bin")
+  val packLibBin = inputKey[File]("Pack a Scala.js library (jars or class directories) into a .bin archive preloadable by the JS REPL: packLibBin <out.bin> <jar-or-classdir>...")
   val updateEvalChecks = taskKey[Unit]("Regenerate the eval scripted-test checkfiles in repl-js/test-resources/eval")
 
   /** Node-run a linked Scala.js scripted-test main with the packed compiler
@@ -79,6 +80,41 @@ object Build {
     val cmd = Seq("node", mainJs.getAbsolutePath) ++ args
     val exit = _root_.scala.sys.process.Process(cmd, cwd, env: _*).!
     if (failOnError && exit != 0) sys.error(s"scripted tests failed (exit code $exit)")
+  }
+
+  /** Write the packed `.bin` archive format shared by classpath.bin,
+   *  linker-libs.bin and packLibBin output:
+   *  [4 bytes: index length, big-endian][JSON index path -> [offset, size]][data].
+   *  Read back by `ClasspathBlob.loadEntries` (compiler-js). */
+  private def writeBinArchive(entries: Seq[(String, File)], outputFile: File): Unit = {
+    val dataStream = new java.io.ByteArrayOutputStream()
+    val index = new _root_.scala.collection.mutable.LinkedHashMap[String, (Int, Int)]()
+    var offset = 0
+
+    for ((rel, file) <- entries) {
+      val bytes = IO.readBytes(file)
+      index(rel) = (offset, bytes.length)
+      dataStream.write(bytes)
+      offset += bytes.length
+    }
+
+    val jsonEntries = index.map { case (path, (off, size)) =>
+      s""""$path":[$off,$size]"""
+    }.mkString("{", ",", "}")
+    val indexBytes = jsonEntries.getBytes("UTF-8")
+
+    val out = new java.io.BufferedOutputStream(new java.io.FileOutputStream(outputFile))
+    try {
+      // Big-endian uint32 for index length
+      out.write((indexBytes.length >> 24) & 0xff)
+      out.write((indexBytes.length >> 16) & 0xff)
+      out.write((indexBytes.length >> 8) & 0xff)
+      out.write(indexBytes.length & 0xff)
+      out.write(indexBytes)
+      dataStream.writeTo(out)
+    } finally {
+      out.close()
+    }
   }
   val prepareBinaryAssets = taskKey[File]("Build fullLinkJS main.js + packed archives and generate the bun cli.ts entrypoint")
   val buildBinary = taskKey[File]("Build a standalone `scala3` executable with bun for the host platform")
@@ -2040,39 +2076,7 @@ object Build {
           s.cacheDirectory / "packClasspath", FilesInfo.lastModified, FilesInfo.exists
         ) { (_: Set[File]) =>
           s.log.info(s"Packing ${entries.size} classpath files into ${outputFile.getName}...")
-
-          // Build data buffer and index
-          val dataStream = new java.io.ByteArrayOutputStream()
-          val index = new _root_.scala.collection.mutable.LinkedHashMap[String, (Int, Int)]()
-          var offset = 0
-
-          for ((rel, file) <- entries) {
-            val bytes = IO.readBytes(file)
-            index(rel) = (offset, bytes.length)
-            dataStream.write(bytes)
-            offset += bytes.length
-          }
-
-          // Build JSON index
-          val jsonEntries = index.map { case (path, (off, size)) =>
-            s""""$path":[$off,$size]"""
-          }.mkString("{", ",", "}")
-          val indexBytes = jsonEntries.getBytes("UTF-8")
-
-          // Write archive: [4 bytes: index length] [index JSON] [data]
-          val out = new java.io.BufferedOutputStream(new java.io.FileOutputStream(outputFile))
-          try {
-            // Big-endian uint32 for index length
-            out.write((indexBytes.length >> 24) & 0xff)
-            out.write((indexBytes.length >> 16) & 0xff)
-            out.write((indexBytes.length >> 8) & 0xff)
-            out.write(indexBytes.length & 0xff)
-            out.write(indexBytes)
-            dataStream.writeTo(out)
-          } finally {
-            out.close()
-          }
-
+          writeBinArchive(entries, outputFile)
           s.log.info(s"Wrote ${outputFile.length()} bytes to ${outputFile.getAbsolutePath}")
           Set(outputFile)
         }
@@ -2098,35 +2102,7 @@ object Build {
           s.cacheDirectory / "packLinkerLibs", FilesInfo.lastModified, FilesInfo.exists
         ) { (_: Set[File]) =>
           s.log.info(s"Packing ${entries.size} .sjsir files into ${outputFile.getName}...")
-
-          val dataStream = new java.io.ByteArrayOutputStream()
-          val index = new _root_.scala.collection.mutable.LinkedHashMap[String, (Int, Int)]()
-          var offset = 0
-
-          for ((rel, file) <- entries) {
-            val bytes = IO.readBytes(file)
-            index(rel) = (offset, bytes.length)
-            dataStream.write(bytes)
-            offset += bytes.length
-          }
-
-          val jsonEntries = index.map { case (path, (off, size)) =>
-            s""""$path":[$off,$size]"""
-          }.mkString("{", ",", "}")
-          val indexBytes = jsonEntries.getBytes("UTF-8")
-
-          val out = new java.io.BufferedOutputStream(new java.io.FileOutputStream(outputFile))
-          try {
-            out.write((indexBytes.length >> 24) & 0xff)
-            out.write((indexBytes.length >> 16) & 0xff)
-            out.write((indexBytes.length >> 8) & 0xff)
-            out.write(indexBytes.length & 0xff)
-            out.write(indexBytes)
-            dataStream.writeTo(out)
-          } finally {
-            out.close()
-          }
-
+          writeBinArchive(entries, outputFile)
           s.log.info(s"Wrote ${outputFile.length()} bytes to ${outputFile.getAbsolutePath}")
           Set(outputFile)
         }
@@ -2257,6 +2233,45 @@ object Build {
         val outputFile = outputDir.getParentFile / "linker-libs.bin"
         IO.createDirectory(outputFile.getParentFile)
         IO.copyFile(source, outputFile)
+        outputFile
+      },
+      // Pack a Scala.js library — jars (as published by sbt-scalajs, carrying
+      // .tasty + .sjsir side by side) or compiled class directories — into one
+      // .bin archive that the JS REPL preloads via `--classpath <out.bin>` or
+      // `DOTTY_EXTRA_LIBS_BIN`. Keeps .tasty, .sjsir, and .class files without
+      // a .tasty sibling; on duplicate relative paths the first input wins
+      // (matching the REPL's first-on-classpath-wins semantics).
+      packLibBin := {
+        val s = streams.value
+        val args = spaceDelimited("<out.bin> <jar-or-classdir>...").parsed
+        if (args.length < 2) sys.error("usage: packLibBin <out.bin> <jar-or-classdir>...")
+        val root = (LocalRootProject / baseDirectory).value
+        def resolve(p: String): File = { val f = file(p); if (f.isAbsolute) f else root / p }
+        val outputFile = resolve(args.head)
+
+        IO.withTemporaryDirectory { tmp =>
+          val dirs = args.tail.zipWithIndex.map { case (in, i) =>
+            val f = resolve(in)
+            if (!f.exists()) sys.error(s"packLibBin: input not found: $f")
+            if (f.isDirectory) f
+            else { val d = tmp / s"jar$i"; IO.createDirectory(d); IO.unzip(f, d); d }
+          }
+          val entries = dirs.flatMap { dir =>
+            val base = dir.toPath
+            def rel(f: File) = base.relativize(f.toPath).toString.replace('\\', '/')
+            val tastyFiles = (dir ** "*.tasty").get
+            val tastyPaths = tastyFiles.map(f => rel(f).stripSuffix(".tasty")).toSet
+            val classFiles = (dir ** "*.class").get.filterNot(f => tastyPaths.contains(rel(f).stripSuffix(".class")))
+            val sjsirFiles = (dir ** "*.sjsir").get
+            (tastyFiles ++ classFiles ++ sjsirFiles).map(f => (rel(f), f))
+          }
+          val seen = _root_.scala.collection.mutable.HashSet[String]()
+          val deduped = entries.filter { case (rel, _) => seen.add(rel) }
+          if (deduped.isEmpty) sys.error("packLibBin: no .tasty/.class/.sjsir entries found in the inputs")
+          IO.createDirectory(outputFile.getParentFile)
+          writeBinArchive(deduped, outputFile)
+          s.log.info(s"packLibBin: wrote ${deduped.size} entries (${outputFile.length()} bytes) to $outputFile")
+        }
         outputFile
       },
       prepareBinaryAssets := {

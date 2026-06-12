@@ -21,6 +21,7 @@ final class ReplSession private (
   cpDir: VirtualDirectory,
   sessionDir: VirtualDirectory,
   runner: InterpreterRunner,
+  extraCpDirs: List[VirtualDirectory],
 ):
   import ReplSession.*
 
@@ -30,6 +31,7 @@ final class ReplSession private (
     cpDir,
     sessionDir,
     runner,
+    extraCpDirs = extraCpDirs,
     output = s =>
       val out = currentOutput
       if out != null then out.append(s)
@@ -200,11 +202,16 @@ object ReplSession:
     chunks: List[OutputChunk] = Nil,
   )
 
-  def create(cpDir: VirtualDirectory, linkerLibs: ArrayBuffer): Future[ReplSession] =
+  /** Create a session over the bundled classpath + interpreter libraries, with
+   *  optional extra libraries (see [[ExtraLib]]) preloaded into both sides.
+   *  Shadowed extra-lib entries (first match wins) are reported on stderr. */
+  def create(cpDir: VirtualDirectory, linkerLibs: ArrayBuffer, extraLibs: List[ExtraLib] = Nil): Future[ReplSession] =
     val sessionDir = new VirtualDirectory("(repl-session)", None)
     val runner = new InterpreterRunner
-    runner.loadLibrary(linkerLibs).map { _ =>
-      new ReplSession(cpDir, sessionDir, runner)
+    for (libName, path) <- ExtraLib.shadowedPaths(cpDir, extraLibs) do
+      Console.err.println(s"warning: $libName: classpath entry '$path' is shadowed by an earlier entry and ignored")
+    runner.loadLibrary(linkerLibs, extraLibs.map(_.sjsir)).map { _ =>
+      new ReplSession(cpDir, sessionDir, runner, extraLibs.map(_.cpDir))
     }
 
   private def throwableMessage(e: Throwable): String =

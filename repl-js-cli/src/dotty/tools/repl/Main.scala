@@ -9,8 +9,10 @@ import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
  *  Loads the bundled `classpath.bin` (for compiling lines) and `linker-libs.bin`
  *  (library `.sjsir` for the interpreter) — their paths come from the
  *  `DOTTY_CLASSPATH_BIN` / `DOTTY_LINKER_LIBS_BIN` env vars set by the launcher.
+ *  Extra libraries (packed `.bin` archives, see the `packLibBin` sbt task) can
+ *  be preloaded with `--classpath a.bin:b.bin` or `DOTTY_EXTRA_LIBS_BIN`.
  *
- *  Three modes:
+ *  Three modes (after `--classpath` options are extracted):
  *   - `--script <file>`: replay a scripted-test transcript (echo each `scala>`
  *     line, evaluate it, print the rendered output) — used by the test harness.
  *   - CLI args: evaluate each argument as one line.
@@ -29,19 +31,24 @@ object Main:
         try js.Dynamic.global.process.argv.asInstanceOf[js.Array[String]].jsSlice(2).toArray
         catch case _: Throwable => args0
 
-    ReplBootstrap.createSessionFromEnv() match
-      case Some(sessionF) =>
-        sessionF.foreach { session =>
-          val client = new JsonReplClient(session)
-          args.toList match
-            case "--script" :: file :: _ => runScript(client, file)
-            case Nil                     => interactive(client)
-            case lines                   => runLines(client, lines.map(l => s"$Prompt $l"))
-        }
-        sessionF.failed.foreach(reportError)
-      case _ =>
-        Console.err.println("error: set DOTTY_CLASSPATH_BIN and DOTTY_LINKER_LIBS_BIN (use bin/scala-repl-js)")
+    ReplBootstrap.extractClasspathArgs(args.toList) match
+      case Left(err) =>
+        Console.err.println(s"error: $err")
         ReplBootstrap.setExitCode(1)
+      case Right((extraLibs, rest)) =>
+        ReplBootstrap.createSessionFromEnv(extraLibs) match
+          case Some(sessionF) =>
+            sessionF.foreach { session =>
+              val client = new JsonReplClient(session)
+              rest match
+                case "--script" :: file :: _ => runScript(client, file)
+                case Nil                     => interactive(client)
+                case lines                   => runLines(client, lines.map(l => s"$Prompt $l"))
+            }
+            sessionF.failed.foreach(reportError)
+          case _ =>
+            Console.err.println("error: set DOTTY_CLASSPATH_BIN and DOTTY_LINKER_LIBS_BIN (use bin/scala-repl-js)")
+            ReplBootstrap.setExitCode(1)
 
   private val Prompt = "scala>"
 

@@ -10,16 +10,30 @@ import scala.scalajs.js
  *
  *  Protocol: one request JSON object per stdin line, one response JSON object
  *  per stdout line, processed strictly in input order (see [[JsonProtocol]]).
+ *
+ *  Extra libraries (packed `.bin` archives, see the `packLibBin` sbt task) can
+ *  be preloaded with `--classpath a.bin:b.bin` or `DOTTY_EXTRA_LIBS_BIN`.
  */
 object JsonMain:
 
   def main(args: Array[String]): Unit =
     if !ReplBootstrap.hasProcess then return
-    ReplBootstrap.createSessionFromEnv() match
-      case Some(sessionF) => sessionF.foreach(run)
-      case None =>
-        writeLine(JsonProtocol.protocolError("set DOTTY_CLASSPATH_BIN and DOTTY_LINKER_LIBS_BIN"))
+    ReplBootstrap.extractClasspathArgs(ReplBootstrap.args) match
+      case Left(err) =>
+        writeLine(JsonProtocol.protocolError(err))
         ReplBootstrap.setExitCode(1)
+      case Right((extraLibs, _)) =>
+        ReplBootstrap.createSessionFromEnv(extraLibs) match
+          case Some(sessionF) =>
+            sessionF.foreach(run)
+            sessionF.failed.foreach { e =>
+              writeLine(JsonProtocol.protocolError(
+                Option(e.getMessage).filter(_.nonEmpty).getOrElse(e.toString)))
+              ReplBootstrap.setExitCode(1)
+            }
+          case None =>
+            writeLine(JsonProtocol.protocolError("set DOTTY_CLASSPATH_BIN and DOTTY_LINKER_LIBS_BIN"))
+            ReplBootstrap.setExitCode(1)
 
   private def run(session: ReplSession): Unit =
     val readline = js.Dynamic.global.require("readline")

@@ -39,7 +39,13 @@ object EvalScriptedTests:
         println("error: set DOTTY_CLASSPATH_BIN and DOTTY_LINKER_LIBS_BIN")
         ReplBootstrap.setExitCode(1)
       case Some(sessionF) =>
-        sessionF.flatMap(session => runAll(session, dir, update, filter)).onComplete {
+        sessionF.flatMap(session => runAll(session, dir, update, filter)).flatMap {
+          case (passed, failed) =>
+            // The extra-libs suite has no checkfiles, so it is skipped on
+            // --update; a name filter that cannot match it skips it too.
+            if update || !filter.forall(f => "extra-libs".contains(f)) then Future.successful((passed, failed))
+            else ExtraLibsTests.run().map((p, f) => (passed + p, failed + f))
+        }.onComplete {
           case scala.util.Success((passed, failed)) =>
             val verb = if update then "updated" else "passed"
             println(s"\n==== $passed $verb, $failed failed ====")

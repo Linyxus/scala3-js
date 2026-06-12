@@ -33,23 +33,33 @@ import java.nio.ByteBuffer
 class InterpreterRunner:
   private var interp = new Interpreter(Semantics.Defaults)
   private var libBuffer: ArrayBuffer = null.asInstanceOf[ArrayBuffer]
+  private var extraIR: List[Map[String, Array[Byte]]] = Nil
 
   private def toIRFiles(m: Map[String, Array[Byte]]): Seq[IRFile] =
     m.map { case (path, bytes) =>
       new MemIRFileImpl(path, Version.Unversioned, bytes): IRFile
     }.toSeq
 
-  /** Load the bundled standard-library `.sjsir` (from `linker-libs.bin`) once. */
-  def loadLibrary(buffer: ArrayBuffer): Future[Unit] =
+  /** Load the bundled standard-library `.sjsir` (from `linker-libs.bin`) once,
+   *  then each extra library's `.sjsir` in order. The stdlib loads first so it
+   *  wins the interpreter's by-class-name dedup, matching the compile-time
+   *  classpath order (see [[ExtraLib]]). */
+  def loadLibrary(buffer: ArrayBuffer, extras: List[Map[String, Array[Byte]]] = Nil): Future[Unit] =
     libBuffer = buffer
-    interp.loadIRFiles(toIRFiles(InterpreterRunner.parseArchive(buffer)))
+    extraIR = extras
+    loadAll()
 
-  /** Discard the live VM (a fresh interpreter + reloaded library) for `:reset`.
+  /** Discard the live VM (a fresh interpreter + reloaded libraries) for `:reset`.
    *  Necessary because wrapper names restart at `rs$line$1`, which the old
    *  interpreter would dedup against the already-loaded class. */
   def reset(): Future[Unit] =
     interp = new Interpreter(Semantics.Defaults)
-    interp.loadIRFiles(toIRFiles(InterpreterRunner.parseArchive(libBuffer)))
+    loadAll()
+
+  private def loadAll(): Future[Unit] =
+    extraIR.foldLeft(interp.loadIRFiles(toIRFiles(InterpreterRunner.parseArchive(libBuffer)))) {
+      (acc, ir) => acc.flatMap(_ => interp.loadIRFiles(toIRFiles(ir)))
+    }
 
   /** Clear the value bridge before running a wrapper.
    *
@@ -115,21 +125,4 @@ object InterpreterRunner:
   /** Parse a packed `*.bin` archive (4-byte index length, JSON index, data) into
    *  path -> bytes. Same format as `ClasspathBlob`/`packLinkerLibs`. */
   private def parseArchive(buffer: ArrayBuffer): Map[String, Array[Byte]] =
-    val view = new DataView(buffer)
-    val indexLen = view.getUint32(0).toInt
-    val indexBytes = new Uint8Array(buffer, 4, indexLen)
-    val decoder = js.Dynamic.newInstance(js.Dynamic.global.TextDecoder)("utf-8")
-    val indexJson = decoder.decode(indexBytes).asInstanceOf[String]
-    val index = js.JSON.parse(indexJson).asInstanceOf[js.Dictionary[js.Array[Int]]]
-    val dataOffset = 4 + indexLen
-    index.map { case (path, arr) =>
-      val fileOffset = arr(0)
-      val fileSize = arr(1)
-      val fileBytes = new Int8Array(buffer, dataOffset + fileOffset, fileSize)
-      val byteArray = new Array[Byte](fileSize)
-      var i = 0
-      while i < fileSize do
-        byteArray(i) = fileBytes(i)
-        i += 1
-      (path, byteArray)
-    }.toMap
+    dotty.tools.dotc.ClasspathBlob.loadEntries(buffer).toMap

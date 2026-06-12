@@ -49,6 +49,7 @@ class JSReplDriver(
   cpDir: VirtualDirectory,
   sessionDir: VirtualDirectory,
   runner: InterpreterRunner,
+  extraCpDirs: List[VirtualDirectory] = Nil,
   extraSettings: List[String] = Nil,
   output: String => Unit = s => { js.Dynamic.global.process.stdout.write(s); () },
 ) extends Driver:
@@ -66,11 +67,11 @@ class JSReplDriver(
     val base = new ContextBase:
       override protected def newPlatform(using Context): Platform =
         new SJSPlatform:
+          // First match wins: the bundled stdlib, then each preloaded extra
+          // library in order, then the session's own compiled wrappers.
           override def classPath(using Context): dotty.tools.io.ClassPath =
-            AggregateClassPath(Seq(
-              VirtualDirectoryClassPath(cpDir),
-              VirtualDirectoryClassPath(sessionDir),
-            ))
+            AggregateClassPath(
+              (cpDir :: extraCpDirs ::: List(sessionDir)).map(VirtualDirectoryClassPath(_)))
     base.initialCtx
 
   /** A fresh base context (new symbol table) for the initial session / `:reset`. */
@@ -370,7 +371,7 @@ class JSReplDriver(
       outPrintln(":require is no longer supported, but has been replaced with :jar. Please use :jar")
       Future.successful(success(state))
     case JarCmd(path) =>
-      outPrintln(s"""Cannot add "$path" to classpath.""")
+      outPrintln(s"""Cannot add "$path" to classpath mid-session. Preload packed libraries at startup with `--classpath <archives.bin>` (see the packLibBin sbt task).""")
       Future.successful(success(state))
     case KindOf(_) =>
       outPrintln("The :kind command is not currently supported.")
