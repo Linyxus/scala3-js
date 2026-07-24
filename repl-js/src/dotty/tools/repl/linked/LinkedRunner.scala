@@ -59,9 +59,10 @@ final class LinkedRunner extends ReplRunner:
 
   def loadLibrary(buffer: ArrayBuffer, extras: List[Map[String, Array[Byte]]] = Nil): Future[Unit] =
     val base = baseFor(buffer, extras)
-    LinkedImage.buildInto(base.linker, base.baseIR, base.inits, freshSessionDir()).map { case (img, _) =>
+    LinkedImage.buildInto(base.linker, base.baseIR, base.inits, freshSessionDir()).map { case (img, r) =>
       image = img
       lineCounter = 0
+      Diagnostics.recordBoot(r)
     }
 
   def reset(): Future[Unit] =
@@ -82,11 +83,18 @@ final class LinkedRunner extends ReplRunner:
       case null => Future.failed(new IllegalStateException("linked image not built"))
       case img =>
         lineCounter += 1
+        // Wrapper-side timers (permanent relink-latency debugging infrastructure,
+        // purely observational): bracket every code path so the full per-line wall
+        // is attributed with no unexplained residue. See [[Diagnostics]].
+        val tStart = System.nanoTime()
         val freshDefs = newSjsir.valuesIterator
           .map(b => Serializers.deserialize(ByteBuffer.wrap(b))).toList
+        val deserializeMs = (System.nanoTime() - tStart).toDouble / 1e6
+        val tSynth = System.nanoTime()
         val wrapperCN = resolveWrapper(freshDefs, wrapperClassName)
         val (triggerFiles, moduleId, _) = LinkedImage.Synth.lineTrigger(lineCounter, wrapperCN, freshDefs)
         val freshIR = toIRFiles(newSjsir) ++ triggerFiles
+        val synthesizeMs = (System.nanoTime() - tSynth).toDouble / 1e6
         // A relink can fail outright (not just breach) when this line's member
         // forcing reaches a target the image cannot link — treat that like a breach:
         // restore the committed baseline and surface a clean restriction, never a
@@ -97,7 +105,15 @@ final class LinkedRunner extends ReplRunner:
             Future.failed(new LinkedRestriction(linkFailureMessage(e))))
         }
         relink.flatMap { res =>
-          if res.isAdditive then importAndRun(img.sessionDir, moduleId)
+          if res.isAdditive then
+            val tImport = System.nanoTime()
+            importAndRun(img.sessionDir, moduleId).map { _ =>
+              val importMs = (System.nanoTime() - tImport).toDouble / 1e6
+              val totalMs = (System.nanoTime() - tStart).toDouble / 1e6
+              Diagnostics.recordLine(Diagnostics.LineTiming(
+                deserializeMs, synthesizeMs, res.linkMs, res.oracleMs, res.writebackMs,
+                importMs, totalMs, additive = true, res.phaseTimings))
+            }
           else img.restoreBaseline().map(_ => throw new LinkedRestriction(restrictionMessage(res)))
         }
 
@@ -136,6 +152,39 @@ object LinkedRunner:
   /** A line whose linked module would breach byte-additivity: it links a construct
    *  the warm image cannot serve without changing already-frozen modules. */
   final class LinkedRestriction(msg: String) extends RuntimeException(msg)
+
+  /** Permanent relink-latency debugging infrastructure: the wrapper-side timing
+   *  breakdown of the last boot (cold/warm image build) and the last additive
+   *  per-line relink, published process-globally so a measurement harness in the
+   *  same worker (`linkedModeTest`) can read them. Purely observational — recorded
+   *  after the work completes, never gating control flow, output, or determinism. */
+  object Diagnostics:
+    /** Timing of one image build (`loadLibrary`/`reset` → [[LinkedImage.buildInto]]).
+     *  The very first linked session in a process links on a fresh linker (a true
+     *  COLD link); later sessions reuse the process-global warm linker. */
+    final case class BootTiming(linkMs: Double, phaseTimings: List[LinkedImage.PhaseTiming])
+
+    /** Full attribution of one additive per-line relink: our wrapper code
+     *  (`deserialize`/`synthesize`/`import`) + the [[LinkedImage]] server rows
+     *  (`link`/`oracle`/`writeback`) + `total` wall, and the linker's own phase
+     *  breakdown for the `link` row. `deserialize + synthesize + link + oracle +
+     *  writeback + import` should account for `total` within a small residue. */
+    final case class LineTiming(
+        deserializeMs: Double, synthesizeMs: Double, linkMs: Double,
+        oracleMs: Double, writebackMs: Double, importMs: Double, totalMs: Double,
+        additive: Boolean, phaseTimings: List[LinkedImage.PhaseTiming])
+
+    @volatile private var _boot: Option[BootTiming] = None
+    @volatile private var _line: Option[LineTiming] = None
+
+    def recordBoot(r: LinkedImage.RelinkResult): Unit =
+      _boot = Some(BootTiming(r.linkMs, r.phaseTimings))
+    def recordLine(t: LineTiming): Unit = _line = Some(t)
+
+    /** The most recent image build's timing (overwritten by each new session). */
+    def lastBoot: Option[BootTiming] = _boot
+    /** The most recent additive per-line relink's timing. */
+    def lastLine: Option[LineTiming] = _line
 
   private def restrictionMessage(res: LinkedImage.RelinkResult): String =
     val mods = res.changedPreviouslyEmitted

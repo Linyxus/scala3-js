@@ -17,7 +17,7 @@ import org.scalajs.ir.WellKnownNames.{ObjectClass, NoArgConstructorName}
 import org.scalajs.linker.StandardImpl
 import org.scalajs.linker.MemOutputDirectory
 import org.scalajs.linker.interface.{IRFile, ModuleInitializer, StandardConfig, ModuleKind, ModuleSplitStyle, ESVersion, Linker}
-import org.scalajs.logging.{Level, ScalaConsoleLogger}
+import org.scalajs.logging.{Level, Logger, ScalaConsoleLogger}
 
 /** A warm, member-complete linked image and its incremental relinker.
  *
@@ -62,8 +62,8 @@ final class LinkedImage private[linked] (
    *  path uses [[tryAddEntries]] instead, which refuses to commit a breach. */
   def addEntries(newEntryIR: Seq[IRFile]): Future[LinkedImage.RelinkResult] =
     val nextEntries = entriesIR ++ newEntryIR
-    LinkedImage.linkOnce(linker, baseIR ++ nextEntries, initializers).map { case (next, ms) =>
-      val res = LinkedImage.diffAndWriteback(sessionDir, snap, next, ms)
+    LinkedImage.linkOnce(linker, baseIR ++ nextEntries, initializers).map { case (next, ms, timings) =>
+      val res = LinkedImage.diffAndWriteback(sessionDir, snap, next, ms, timings)
       entriesIR = nextEntries
       snap = next
       res
@@ -82,13 +82,18 @@ final class LinkedImage private[linked] (
    *  surface the breach to the user). */
   def tryAddEntries(newEntryIR: Seq[IRFile]): Future[LinkedImage.RelinkResult] =
     val nextEntries = entriesIR ++ newEntryIR
-    LinkedImage.linkOnce(linker, baseIR ++ nextEntries, initializers).map { case (next, ms) =>
-      val res = LinkedImage.diff(snap, next, ms)
+    LinkedImage.linkOnce(linker, baseIR ++ nextEntries, initializers).map { case (next, ms, timings) =>
+      val tOracle = System.nanoTime()
+      val res = LinkedImage.diff(snap, next, ms, timings)
+      val oracleMs = (System.nanoTime() - tOracle).toDouble / 1e6
+      var writebackMs = 0.0
       if res.isAdditive then
+        val tWrite = System.nanoTime()
         LinkedImage.writeback(sessionDir, snap, next)
+        writebackMs = (System.nanoTime() - tWrite).toDouble / 1e6
         entriesIR = nextEntries
         snap = next
-      res
+      res.copy(oracleMs = oracleMs, writebackMs = writebackMs)
     }
 
   /** Relink the current committed baseline (`base ++ entries`), resetting the warm
@@ -96,8 +101,8 @@ final class LinkedImage private[linked] (
    *  [[tryAddEntries]] breach: determinism guarantees this reproduces the committed
    *  snapshot byte-for-byte (so a correct generator yields zero changed files). */
   def restoreBaseline(): Future[LinkedImage.RelinkResult] =
-    LinkedImage.linkOnce(linker, baseIR ++ entriesIR, initializers).map { case (next, ms) =>
-      val res = LinkedImage.diff(snap, next, ms)
+    LinkedImage.linkOnce(linker, baseIR ++ entriesIR, initializers).map { case (next, ms, timings) =>
+      val res = LinkedImage.diff(snap, next, ms, timings)
       // Defensive: rewrite any drift (there should be none) and re-anchor snap.
       if (res.newModules.nonEmpty || res.changedPreviouslyEmitted.nonEmpty || res.removed.nonEmpty) then
         LinkedImage.writeback(sessionDir, snap, next)
@@ -112,13 +117,43 @@ final class LinkedImage private[linked] (
 object LinkedImage:
 
   /** The oracle result of one (re)link. `changedPreviouslyEmitted` non-empty ⟺ an
-   *  additivity breach; stage B surfaces that as a user error. */
+   *  additivity breach; stage B surfaces that as a user error.
+   *
+   *  Carries the per-link timing breakdown (permanent relink-latency debugging
+   *  infrastructure, purely observational): `linkMs` is the whole `link()` wall
+   *  (link call + reading the modules out of the in-memory output dir); `oracleMs`
+   *  the byte-diff pass; `writebackMs` the diff-only disk writeback; `phaseTimings`
+   *  the linker's own per-phase breakdown (see [[PhaseTiming]] / [[CapturingLogger]]). */
   final case class RelinkResult(
       newModules: List[String],
       changedPreviouslyEmitted: List[String],
       removed: List[String],
-      linkMs: Double):
+      linkMs: Double,
+      oracleMs: Double = 0.0,
+      writebackMs: Double = 0.0,
+      phaseTimings: List[PhaseTiming] = Nil):
     def isAdditive: Boolean = changedPreviouslyEmitted.isEmpty && removed.isEmpty
+
+  /** One `logger.time(title, nanos)` event the linker reported during a link, plus
+   *  the wall clock ([[System.nanoTime]]) it fired at. Because the linker's phases
+   *  nest and each `time` fires when its block completes, `endNanos` lets the phase
+   *  tree be reconstructed by interval containment: phase A is nested in phase B iff
+   *  A's `[endNanos - nanos, endNanos]` interval lies inside B's. */
+  final case class PhaseTiming(title: String, nanos: Long, endNanos: Long):
+    def ms: Double = nanos.toDouble / 1e6
+
+  /** A [[Logger]] that records every per-phase `time(title, nanos)` the linker
+   *  reports while still forwarding real log messages to `delegate`. A fresh one is
+   *  used per `link()` call ([[linkOnce]]) so its [[timings]] are that link's phase
+   *  breakdown. Overriding `time` (a default `Logger` method that otherwise just
+   *  `debug`s the duration) is the sanctioned way to observe the phases. */
+  private final class CapturingLogger(delegate: Logger) extends Logger:
+    private val buf = scala.collection.mutable.ListBuffer.empty[PhaseTiming]
+    def log(level: Level, message: => String): Unit = delegate.log(level, message)
+    def trace(t: => Throwable): Unit = delegate.trace(t)
+    override def time(title: String, nanos: Long): Unit =
+      buf += PhaseTiming(title, nanos, System.nanoTime())
+    def timings: List[PhaseTiming] = buf.toList
 
   /** The pinned linker configuration: per-class ES modules, optimizer off, warm
    *  (non-batch) relinks, no source maps, ES2018 (pinned repo-wide). Mirrors
@@ -131,7 +166,7 @@ object LinkedImage:
     .withSourceMap(false)
     .withESFeatures(_.withESVersion(ESVersion.ES2018))
 
-  private val logger = new ScalaConsoleLogger(Level.Error)
+  private val baseLogger: Logger = new ScalaConsoleLogger(Level.Error)
 
   /** A fresh `StandardImpl.linker(config)` — a warm, incremental (non-batch)
    *  linker. Kept process-global by the linked runner so `:reset` reuses one warm
@@ -151,41 +186,46 @@ object LinkedImage:
    *  linker's incremental state is reset to the base by this link. */
   def buildInto(linker: Linker, baseIR: Seq[IRFile], initializers: Seq[ModuleInitializer],
       sessionDir: String): Future[(LinkedImage, RelinkResult)] =
-    linkOnce(linker, baseIR, initializers).map { case (next, ms) =>
+    linkOnce(linker, baseIR, initializers).map { case (next, ms, timings) =>
       Fs.ensureDir(sessionDir)
       Fs.writePackageJson(sessionDir)
       next.foreach { case (name, bytes) => Fs.writeFileBytes(joinPath(sessionDir, name), bytes) }
       val img = new LinkedImage(linker, initializers, baseIR, sessionDir, Nil, next)
-      (img, RelinkResult(next.keys.toList.sorted, Nil, Nil, ms))
+      (img, RelinkResult(next.keys.toList.sorted, Nil, Nil, ms, phaseTimings = timings))
     }
 
   private def linkOnce(linker: Linker, ir: Seq[IRFile],
-      inits: Seq[ModuleInitializer]): Future[(Map[String, Array[Byte]], Double)] =
+      inits: Seq[ModuleInitializer]): Future[(Map[String, Array[Byte]], Double, List[PhaseTiming])] =
     val out = MemOutputDirectory()
+    val cap = new CapturingLogger(baseLogger)
     val t0 = System.nanoTime()
-    linker.link(ir, inits, out, logger).map { _ =>
+    linker.link(ir, inits, out, cap).map { _ =>
       val ms = (System.nanoTime() - t0).toDouble / 1e6
       val b = Map.newBuilder[String, Array[Byte]]
       out.fileNames().foreach(n => b += (n -> out.content(n).get))
-      (b.result(), ms)
+      (b.result(), ms, cap.timings)
     }
 
   private def diffAndWriteback(sessionDir: String, prev: Map[String, Array[Byte]],
-      next: Map[String, Array[Byte]], ms: Double): RelinkResult =
-    val res = diff(prev, next, ms)
+      next: Map[String, Array[Byte]], ms: Double, timings: List[PhaseTiming]): RelinkResult =
+    val t1 = System.nanoTime()
+    val res = diff(prev, next, ms, timings)
+    val oracleMs = (System.nanoTime() - t1).toDouble / 1e6
+    val t2 = System.nanoTime()
     writeback(sessionDir, prev, next)
-    res
+    val writebackMs = (System.nanoTime() - t2).toDouble / 1e6
+    res.copy(oracleMs = oracleMs, writebackMs = writebackMs)
 
   /** Pure oracle: which modules are new / changed / removed relative to `prev`. */
   private def diff(prev: Map[String, Array[Byte]], next: Map[String, Array[Byte]],
-      ms: Double): RelinkResult =
+      ms: Double, timings: List[PhaseTiming] = Nil): RelinkResult =
     val prevKeys = prev.keySet
     val nextKeys = next.keySet
     val newModules = (nextKeys diff prevKeys).toList.sorted
     val removed = (prevKeys diff nextKeys).toList.sorted
     val changed = (prevKeys intersect nextKeys).iterator
       .filter(k => !bytesEqual(prev(k), next(k))).toList.sorted
-    RelinkResult(newModules, changed, removed, ms)
+    RelinkResult(newModules, changed, removed, ms, phaseTimings = timings)
 
   /** Write only new/changed files and delete removed ones (diff-only writeback). */
   private def writeback(sessionDir: String, prev: Map[String, Array[Byte]],

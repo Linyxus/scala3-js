@@ -2,14 +2,20 @@ package dotty.tools
 package repl
 package linked
 
+import java.nio.ByteBuffer
+
 import scala.concurrent.Future
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 import scala.scalajs.js
 import scala.scalajs.js.typedarray.ArrayBuffer
 
+import org.scalajs.ir.Serializers
+
 import dotty.tools.dotc.ClasspathBlob
 import dotty.tools.io.VirtualDirectory
 import dotty.tools.repl.ReplSession.EvalResponse
+import dotty.tools.repl.linked.LinkedImage.PhaseTiming
+import dotty.tools.repl.linked.LinkedRunner.Diagnostics.{BootTiming, LineTiming}
 
 /** Stage B functional proof: drives a REAL [[ReplSession]] in `DOTTY_REPL_LINKED`
  *  (linked-image) mode through the battery below, and — for the lines that must be
@@ -49,6 +55,9 @@ object LinkedModeTest:
             checks.foreach(c => println(s"[${if c.ok then "PASS" else "FAIL"}] ${c.label}: ${c.detail}"))
             val failed = checks.count(!_.ok)
             println(s"==== ${checks.count(_.ok)} passed, $failed failed ====")
+            if profile.nonEmpty then
+              println("\n==== relink latency profile ====")
+              profile.foreach(println)
             if failed > 0 then ReplBootstrap.setExitCode(1)
           case scala.util.Failure(e) =>
             println(s"error: $e"); e.printStackTrace(); ReplBootstrap.setExitCode(1)
@@ -66,6 +75,10 @@ object LinkedModeTest:
       val tBoot = System.nanoTime()
       ReplSession.create(cpDir, libBuf, Nil, linked = true).flatMap { linked =>
         val bootMs = (System.nanoTime() - tBoot).toDouble / 1e6
+        // The FIRST linked session in the process links on a fresh linker: a true
+        // COLD link. Capture its phase breakdown now, before later warm sessions
+        // (reuse battery, measurement run) overwrite the process-global diagnostic.
+        coldBoot = LinkedRunner.Diagnostics.lastBoot
         note(f"[boot] linked image built in $bootMs%.0f ms")
 
         val checks = scala.collection.mutable.ListBuffer.empty[Check]
@@ -150,7 +163,14 @@ object LinkedModeTest:
             if times.nonEmpty then
               note(f"[timing] linked median ${median(times)}%.0f ms  min ${times.min}%.0f  max ${times.max}%.0f")
             // t1–t4: cross-line member reuse, on their own fresh session pair.
-            reuseBattery(cpDir, libBuf).map(reuse => checks.toList ++ reuse)
+            reuseBattery(cpDir, libBuf).flatMap { reuse =>
+              // Relink-latency profile — a dedicated measurement session (its output
+              // is diagnostics only; it adds no pass/fail checks). Failures here must
+              // not fail the functional test, so recover to a note.
+              measurementRun(cpDir, libBuf)
+                .recover { case e => prof(s"[measurement error] $e") }
+                .map(_ => checks.toList ++ reuse)
+            }
           }
       }
     }
@@ -205,6 +225,153 @@ object LinkedModeTest:
           .map(_ => checks.toList)
       }
     }
+
+  // --- relink-latency profile (measurement, diagnostics only) ----------------
+
+  /** COLD link phase breakdown of the first linked session's boot (captured in
+   *  `run` before later warm sessions overwrite the process-global diagnostic). */
+  private var coldBoot: Option[BootTiming] = None
+  private val profile = scala.collection.mutable.ListBuffer.empty[String]
+  private def prof(s: String): Unit = profile += s
+
+  /** A dedicated measurement session: run N ordinary additive lines on a FRESH
+   *  linked session (its per-line relinks are the warm-relink sample), collect each
+   *  line's timing + the linker's phase breakdown, and build the cold + warm phase
+   *  tables, the wrapper-code rows, and the accounted-vs-wall attribution. Appends
+   *  to `profile` (printed by `main` after the pass/fail summary); adds no checks. */
+  private def measurementRun(cpDir: VirtualDirectory, libBuf: ArrayBuffer): Future[Unit] =
+    // Reference datapoint: the cost of deserializing the whole stdlib IR once. The
+    // linker deserializes each reachable ClassDef ~twice per relink (once for infos,
+    // once to assemble), none of it cached while the IR is `Version.Unversioned`, so
+    // this single pass bounds that re-deserialization tax.
+    val entries = ClasspathBlob.loadEntries(libBuf)
+    val tDes = System.nanoTime()
+    val defs = entries.map { case (_, b) => Serializers.deserialize(ByteBuffer.wrap(b)) }
+    val stdlibDeserializeMs = (System.nanoTime() - tDes).toDouble / 1e6
+    val stdlibClasses = defs.size
+
+    ReplSession.create(cpDir, libBuf, Nil, linked = true).flatMap { linked =>
+      val n = 10
+      def loop(i: Int, acc: List[LineTiming]): Future[List[LineTiming]] =
+        if i >= n then Future.successful(acc.reverse)
+        else
+          val before = LinkedRunner.Diagnostics.lastLine
+          linked.eval(s"val v$i = $i").flatMap { r =>
+            val after = LinkedRunner.Diagnostics.lastLine
+            // Only take a fresh, additive per-line timing (guards against a stale
+            // read if a line ever failed to record).
+            val got = if r.ok && after.ne(before) then after.toList else Nil
+            loop(i + 1, got ::: acc)
+          }
+      loop(0, Nil).map(warm => buildReport(stdlibClasses, stdlibDeserializeMs, warm))
+    }
+
+  private def buildReport(stdlibClasses: Int, stdlibDeserializeMs: Double,
+      warm: List[LineTiming]): Unit =
+    prof("config: ESModule / SmallestModules / optimizer off / batchMode false / ES2018")
+    prof(f"stdlib ClassDefs: $stdlibClasses%,d   full-stdlib deserialize (1 pass, reference): $stdlibDeserializeMs%.0f ms")
+    prof("")
+
+    coldBoot match
+      case Some(b) =>
+        prof(f"--- COLD link (first boot, fresh linker): link() wall ${b.linkMs}%.0f ms ---")
+        phaseTableSingle(b.linkMs, b.phaseTimings).foreach(prof)
+      case None =>
+        prof("--- COLD link: not captured ---")
+    prof("")
+
+    if warm.nonEmpty then
+      prof(f"--- WARM per-line relink phases (${warm.size} additive lines): median (min–max) ms ---")
+      phaseTableWarm(warm).foreach(prof)
+      prof("")
+      prof(f"--- WARM per-line wrapper-code breakdown (${warm.size} lines): median (min–max) ms ---")
+      wrapperTable(warm).foreach(prof)
+    else
+      prof("--- WARM: no additive lines captured ---")
+
+  // Order phases by start time and compute nesting depth by interval containment (a
+  // phase is nested in another iff its [start, end] lies strictly inside). Returns
+  // (title, depth) in pipeline order. Each phase title occurs once per link.
+  private def classify(sample: List[PhaseTiming]): List[(String, Int)] =
+    final case class Iv(title: String, start: Long, end: Long)
+    val ivs = sample.map(p => Iv(p.title, p.endNanos - p.nanos, p.endNanos))
+    ivs.sortBy(_.start).map { iv =>
+      val depth = ivs.count(o =>
+        o.title != iv.title && o.start <= iv.start && o.end >= iv.end &&
+          (o.start < iv.start || o.end > iv.end))
+      (iv.title, depth)
+    }
+
+  private def indent(depth: Int): String = "  " * depth
+  private def pct(part: Double, whole: Double): String =
+    if whole <= 0 then "   -" else f"${100 * part / whole}%3.0f%%"
+
+  /** Phase table for a single link (cold boot). */
+  private def phaseTableSingle(linkMs: Double, sample: List[PhaseTiming]): List[String] =
+    if sample.isEmpty then List("(no phase timings captured)")
+    else
+      val order = classify(sample)
+      val byTitle = sample.map(p => p.title -> p.ms).toMap
+      val topSum = order.filter(_._2 == 0).map((t, _) => byTitle(t)).sum
+      val header = f"${"phase"}%-42s ${"ms"}%7s  %%link"
+      val rows = order.map { (title, depth) =>
+        val label = indent(depth) + title
+        f"$label%-42s ${byTitle(title)}%7.0f  ${pct(byTitle(title), linkMs)}"
+      }
+      val foot = List(
+        f"${"sum(top-level phases)"}%-42s ${topSum}%7.0f  ${pct(topSum, linkMs)}",
+        f"${"link residue (IR read + report + extract)"}%-42s ${linkMs - topSum}%7.0f  ${pct(linkMs - topSum, linkMs)}")
+      header :: rows ++ foot
+
+  /** Aggregated phase table over the warm lines: median (min–max) per phase. */
+  private def phaseTableWarm(warm: List[LineTiming]): List[String] =
+    val sample = warm.map(_.phaseTimings).maxBy(_.size) // a complete representative line
+    if sample.isEmpty then List("(no phase timings captured)")
+    else
+      val order = classify(sample)
+      val perTitle = order.map(_._1).map { title =>
+        title -> warm.flatMap(_.phaseTimings.filter(_.title == title).map(_.ms))
+      }.toMap
+      val linkMed = median(warm.map(_.linkMs))
+      val topTitles = order.filter(_._2 == 0).map(_._1).toSet
+      val topSums = warm.map(lt => lt.phaseTimings.filter(p => topTitles(p.title)).map(_.ms).sum)
+      val residues = warm.map(lt => lt.linkMs - lt.phaseTimings.filter(p => topTitles(p.title)).map(_.ms).sum)
+      val header = f"${"phase"}%-42s ${"med"}%7s ${"min"}%7s ${"max"}%7s  %%link"
+      val rows = order.map { (title, depth) =>
+        val xs = perTitle(title)
+        val label = indent(depth) + title
+        f"$label%-42s ${median(xs)}%7.0f ${xs.min}%7.0f ${xs.max}%7.0f  ${pct(median(xs), linkMed)}"
+      }
+      val foot = List(
+        agg("sum(top-level phases)", topSums, linkMed),
+        agg("link() wall (phases + extract)", warm.map(_.linkMs), linkMed),
+        agg("link residue (IR read + report + extract)", residues, linkMed))
+      header :: rows ++ foot
+
+  /** Wrapper-code breakdown over the warm lines: median (min–max) per stage, with
+   *  the accounted-vs-wall attribution (residue must stay small). */
+  private def wrapperTable(warm: List[LineTiming]): List[String] =
+    val totalMed = median(warm.map(_.totalMs))
+    val accounted = warm.map(lt =>
+      lt.deserializeMs + lt.synthesizeMs + lt.linkMs + lt.oracleMs + lt.writebackMs + lt.importMs)
+    val residues = warm.map(lt => lt.totalMs -
+      (lt.deserializeMs + lt.synthesizeMs + lt.linkMs + lt.oracleMs + lt.writebackMs + lt.importMs))
+    val header = f"${"stage"}%-42s ${"med"}%7s ${"min"}%7s ${"max"}%7s  %%total"
+    List(
+      header,
+      agg("deserialize (line .sjsir)", warm.map(_.deserializeMs), totalMed),
+      agg("synthesize (trigger + lineForce)", warm.map(_.synthesizeMs), totalMed),
+      agg("link (relink + extract)", warm.map(_.linkMs), totalMed),
+      agg("oracle (byte-diff)", warm.map(_.oracleMs), totalMed),
+      agg("writeback (diff-only fs)", warm.map(_.writebackMs), totalMed),
+      agg("import + run", warm.map(_.importMs), totalMed),
+      agg("accounted (sum of stages)", accounted, totalMed),
+      agg("total wall", warm.map(_.totalMs), totalMed),
+      agg("residue (unaccounted)", residues, totalMed))
+
+  /** A median (min–max) row against a whole for the %% column. */
+  private def agg(label: String, xs: List[Double], whole: Double): String =
+    f"$label%-42s ${median(xs)}%7.0f ${xs.min}%7.0f ${xs.max}%7.0f  ${pct(median(xs), whole)}"
 
   // --- helpers ---------------------------------------------------------------
 
