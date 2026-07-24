@@ -67,6 +67,7 @@ object Build {
   val updateEvalChecks = taskKey[Unit]("Regenerate the eval scripted-test checkfiles in repl-js/test-resources/eval")
   val linkedImageSmoke = taskKey[Unit]("Run the linked-image (TouchRoot + LinkedImage) pipeline smoke test under Node")
   val linkedModeTest = taskKey[Unit]("Run the stage-B linked-mode REPL functional test (real ReplSession, linked vs interpreter) under Node")
+  val linkedEvalScriptedTests = taskKey[Unit]("Replay the eval transcripts + ExtraLibsTests through the linked image (stage C task 2); green with the documented linked-mode skip list (linked-eval-excludes.txt)")
 
   /** Node-run a linked Scala.js scripted-test main with the packed compiler
    *  archives + suite-specific vars passed via env. Shared by the JSON-REPL eval
@@ -2729,6 +2730,22 @@ object Build {
           (Test / fastLinkJS / scalaJSLinkerOutputDirectory).value / "main.js" },
         Seq("EVAL_SCRIPTS_DIR" -> ((LocalRootProject / baseDirectory).value / "repl-js" / "test-resources" / "eval").getAbsolutePath),
         Seq("--update"), baseDirectory.value, failOnError = false, streams.value.log),
+
+      // Stage C task 2: replay the SAME transcripts + ExtraLibsTests through the
+      // linked image. Same Test main.js, dispatched by the `--linked` arg;
+      // EVAL_SCRIPTS_DIR + LINKED_EVAL_EXCLUDES point at the transcripts and the
+      // documented skip list, and DOTTY_REPL_LINKED=1 makes ExtraLibsTests' own
+      // (env-constructed) sessions linked too.
+      linkedEvalScriptedTests := runScriptedTests(
+        (`scala3-compiler-cli-sjs` / packClasspath).value,
+        (`scala3-compiler-cli-sjs` / packLinkerLibs).value,
+        { val _ = (Test / fastLinkJS).value
+          (Test / fastLinkJS / scalaJSLinkerOutputDirectory).value / "main.js" },
+        Seq(
+          "EVAL_SCRIPTS_DIR"     -> ((LocalRootProject / baseDirectory).value / "repl-js" / "test-resources" / "eval").getAbsolutePath,
+          "LINKED_EVAL_EXCLUDES" -> (baseDirectory.value / "test" / "linked-eval-excludes.txt").getAbsolutePath,
+          "DOTTY_REPL_LINKED"    -> "1"),
+        Seq("--linked"), baseDirectory.value, failOnError = true, streams.value.log),
     )
 
   /** Existing readline/script/argument REPL entrypoint.

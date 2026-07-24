@@ -138,10 +138,12 @@ object LinkedRunner:
   final class LinkedRestriction(msg: String) extends RuntimeException(msg)
 
   private def restrictionMessage(res: LinkedImage.RelinkResult): String =
+    val mods = res.changedPreviouslyEmitted
+    val shown = mods.take(5).mkString(", ") +
+      (if mods.size > 5 then s", … (+${mods.size - 5} more)" else "")
     "this line uses a construct unsupported in linked REPL mode — e.g. structural/reflective " +
-      "selection, or a JVM-only stdlib member absent from the linked image " +
-      s"(would change ${res.changedPreviouslyEmitted.size} already-linked module(s), e.g. " +
-      s"${res.changedPreviouslyEmitted.take(3).mkString(", ")})"
+      "selection, or a JVM-only stdlib member absent from the linked image.\n" +
+      s"diagnostic: it would change ${mods.size} already-linked module(s): $shown"
 
   private def linkFailureMessage(e: Throwable): String =
     val detail = Option(e.getMessage).map(_.linesIterator.next()).getOrElse(e.getClass.getName.nn)
@@ -181,15 +183,38 @@ object LinkedRunner:
         nb
 
   private def archiveKey(buffer: ArrayBuffer, extras: List[Map[String, Array[Byte]]]): String =
-    s"${buffer.byteLength}:${extras.map(_.size).sum}:${extras.map(_.valuesIterator.map(_.length.toLong).sum).sum}"
+    // Content- and order-sensitive. Two extra-lib sets that differ only in classpath
+    // ORDER (or in the bytes of a same-named class) must NOT share a cached base, or
+    // the second session reuses the first's image and resolves shadowing the wrong
+    // way — the ExtraLibsTests shadow-order case, where [dup1,dup2] and [dup2,dup1]
+    // collided on a size-only key. Hash each lib's sorted (path, length, content
+    // hash), joined in classpath order.
+    val extrasSig = extras.iterator.map { m =>
+      m.toList.sortBy(_._1).iterator
+        .map((p, b) => s"$p#${b.length}#${java.util.Arrays.hashCode(b)}").mkString(",")
+    }.mkString("|")
+    s"${buffer.byteLength}|$extrasSig"
+
+  /** Keep the first entry for each `.sjsir` path (which is 1:1 with its class name),
+   *  dropping later duplicates — first-on-classpath wins. */
+  private def dedupFirstWins(entries: List[(String, Array[Byte])]): List[(String, Array[Byte])] =
+    val seen = scala.collection.mutable.HashSet.empty[String]
+    entries.filter { case (path, _) => seen.add(path) }
 
   private def buildBase(key: String, buffer: ArrayBuffer, extras: List[Map[String, Array[Byte]]]): Base =
     // Consume the fork's IR exactly as InterpreterRunner does: stdlib linker-libs +
     // each extra library's .sjsir. MemIRFileImpl for the linker, deserialized
     // ClassDefs for the touch root (over stdlib *and* extras, so extra-library
     // members are member-covered too — RECON3 Q7.5).
+    //
+    // First-on-classpath wins (RECON3 Q3; matches the interpreter's by-class-name
+    // dedup on load order): dedup duplicate `.sjsir` paths keeping the FIRST, so a
+    // shadowed extra-lib class never reaches the linker. Without this, two libs
+    // defining the same class hand the linker two IR files for it, which it resolves
+    // by its own rule (last wins), diverging from the interpreter's first-wins — the
+    // ExtraLibsTests shadow-order case.
     val entries: List[(String, Array[Byte])] =
-      ClasspathBlob.loadEntries(buffer) ::: extras.flatMap(_.toList)
+      dedupFirstWins(ClasspathBlob.loadEntries(buffer) ::: extras.flatMap(_.toList))
     val libIR: Seq[IRFile] =
       entries.map { case (path, bytes) => new MemIRFileImpl(path, Version.Unversioned, bytes): IRFile }
     val baseDefs: Seq[ClassDef] =

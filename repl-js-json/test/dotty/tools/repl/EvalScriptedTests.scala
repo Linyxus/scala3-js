@@ -30,6 +30,13 @@ object EvalScriptedTests:
   def main(unused: Array[String]): Unit =
     if !ReplBootstrap.hasProcess then return
     val args = ReplBootstrap.args
+    if args.contains("--linked") then
+      // Stage C: replay the SAME transcripts + ExtraLibsTests through the linked
+      // image instead of the interpreter (documented-skip list). The default
+      // `scala3-repl-json-sjs/test` never passes `--linked`, so its behaviour and
+      // this main's default path are untouched.
+      LinkedEvalScriptedTests.main(unused)
+      return
     val update = args.contains("--update")
     val filter = args.find(a => !a.startsWith("--"))
     val dir = ReplBootstrap.env("EVAL_SCRIPTS_DIR").getOrElse("repl-js/test-resources/eval")
@@ -97,7 +104,7 @@ object EvalScriptedTests:
    *  anything else is matched verbatim. Regex matchers express the fuzzy
    *  diagnostics (cc / safe-mode) the way the JVM suite uses `assertContains`. */
   private def isRegex(expected: String): Boolean = expected.startsWith("~ ")
-  private def matches(expected: String, actual: String): Boolean =
+  private[repl] def matches(expected: String, actual: String): Boolean =
     if isRegex(expected) then
       try expected.stripPrefix("~ ").r.findFirstIn(actual).isDefined
       catch case _: Throwable => false // a malformed pattern is a test failure, not a crash
@@ -105,7 +112,7 @@ object EvalScriptedTests:
 
   // --- transcript format -----------------------------------------------------
 
-  private def parse(content: String): List[Turn] =
+  private[repl] def parse(content: String): List[Turn] =
     val turns = ListBuffer.empty[Turn]
     var comments = ListBuffer.empty[String]
     var pending: Option[(List[String], String)] = None
@@ -133,15 +140,15 @@ object EvalScriptedTests:
   // --- node fs + async helpers -----------------------------------------------
 
   private def fs = js.Dynamic.global.require("fs")
-  private def listScripts(dir: String): List[String] =
+  private[repl] def listScripts(dir: String): List[String] =
     try fs.readdirSync(dir).asInstanceOf[js.Array[String]].toList.filter(_.endsWith(".check"))
     catch case _: Throwable => Nil
-  private def readFile(path: String): String =
+  private[repl] def readFile(path: String): String =
     fs.readFileSync(path, "utf8").asInstanceOf[String]
   private def writeFile(path: String, content: String): Unit =
     fs.writeFileSync(path, content, "utf8")
 
-  private def seqFold[A, B](xs: List[A], acc: B)(f: (B, A) => Future[B]): Future[B] =
+  private[repl] def seqFold[A, B](xs: List[A], acc: B)(f: (B, A) => Future[B]): Future[B] =
     xs match
       case Nil     => Future.successful(acc)
       case h :: tl => f(acc, h).flatMap(acc2 => seqFold(tl, acc2)(f))

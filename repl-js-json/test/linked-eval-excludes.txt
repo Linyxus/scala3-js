@@ -1,0 +1,88 @@
+# Eval transcripts that diverge from the interpreter's checkfiles when replayed
+# through the LINKED image (stage C task 2). A file NOT listed here must replay
+# byte-identically in linked mode; a listed file is a documented, expected
+# divergence and is skipped. See LinkedEvalScriptedTests.
+#
+# Format: <test-file-name>: <reason>
+#
+# Every entry below is category (a) dynamic-eval: the transcript exercises
+# eval(...) / evalSafe(...) / embedRepl(...), which the linked image cannot serve
+# (a linked line needs a synchronous relink + import, which is impossible — RECON3
+# HIGH risk). The driver refuses it fast ("dynamic eval(...) is not supported in
+# linked REPL mode"); evalSafe(...) catches that refusal and returns a Failure, so
+# an evalSafe line succeeds with the fallback value instead. Every such transcript's
+# NORMAL setup lines replay byte-identically in linked mode first — only the eval
+# line diverges (the harness short-circuits at that first mismatch).
+#
+# Not represented here (categories with zero occurrences in this suite): (b)
+# structural/reflective selection, (c) stack-frame formatting, (d) falsely-excluded
+# image members, (e) unexplained. The one non-eval divergence found — the
+# ExtraLibsTests shadow-order case — was FIXED (LinkedRunner.buildBase now dedups
+# duplicate .sjsir first-wins), not skipped.
+#
+# 8 transcripts replay identically (not listed): embed-repl-complete-basic,
+# embed-repl-ctx-source, embed-repl-infer-result, embed-repl-nesting,
+# embed-repl-result-custom-type, embed-repl-result-types, embed-repl-type-errors,
+# protocol — they use no eval, or embedRepl without a nested s.eval.
+
+capture.check: dynamic-eval — the transcript runs eval(...); refused in linked mode
+cc-binding-no-propagate.check: dynamic-eval — capture-checking exercised through eval(...); the eval line is refused in linked mode
+cc-leak-return-type.check: dynamic-eval — capture-checking exercised through eval(...); the eval line is refused in linked mode
+cc-nested-violation.check: dynamic-eval — capture-checking exercised through eval(...); the eval line is refused in linked mode
+cc-pure-body-accepted.check: dynamic-eval — capture-checking exercised through eval(...); the eval line is refused in linked mode
+cc-pure-fn.check: dynamic-eval — capture-checking exercised through eval(...); the eval line is refused in linked mode
+cc-pure-return-lambda.check: dynamic-eval — capture-checking exercised through eval(...); the eval line is refused in linked mode
+cc-violation-io-param.check: dynamic-eval — capture-checking exercised through eval(...); the eval line is refused in linked mode
+cc-violation-shared-cap.check: dynamic-eval — capture-checking exercised through eval(...); the eval line is refused in linked mode
+closure-form.check: dynamic-eval — the transcript runs eval(...); refused in linked mode
+embed-repl-accumulate-class.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-accumulate-def.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-accumulate-enum.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-accumulate-extension.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-accumulate-given.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-accumulate-import.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-accumulate-many.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-accumulate-object.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-accumulate-val.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-accumulate-var.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-capture-locals.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-cc.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-complete-from-line.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-complete-outer.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-ctx.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-edge.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-errors.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-eval-returns-value.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-evalsafe-retry.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-features.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-in-eval.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-in-line.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-isolation.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-recursive-driver.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-redefine-shadow.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-safe-rejects.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-safe.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-sees-repl-session.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-type-alias.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-value-to-body.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl-with-eval.check: dynamic-eval — embedRepl body calls s.eval(...); refused in linked mode
+embed-repl.check: dynamic-eval — the transcript runs eval(...); refused in linked mode
+errors.check: dynamic-eval — the transcript runs eval(...); refused in linked mode
+eval-safe.check: dynamic-eval — evalSafe(...) catches the refusal and returns Failure, so getOrElse yields the fallback (-1) not the evaluated value
+nested-and-cache.check: dynamic-eval — the transcript runs eval(...); refused in linked mode
+return-types.check: dynamic-eval — the transcript runs eval(...); refused in linked mode
+runtime-body.check: dynamic-eval — the transcript runs eval(...); refused in linked mode
+safe-asinstanceof-rejected.check: dynamic-eval — evalSafe/safe-mode eval(...); refused in linked mode
+safe-basic.check: dynamic-eval — evalSafe/safe-mode eval(...); refused in linked mode
+safe-binding-no-propagate.check: dynamic-eval — evalSafe/safe-mode eval(...); refused in linked mode
+safe-caps-unsafe-rejected.check: dynamic-eval — evalSafe/safe-mode eval(...); refused in linked mode
+safe-console-rejected.check: dynamic-eval — evalSafe/safe-mode eval(...); refused in linked mode
+safe-mutable-read-pure-rejected.check: dynamic-eval — evalSafe/safe-mode eval(...); refused in linked mode
+safe-mutable-write-rd-rejected.check: dynamic-eval — evalSafe/safe-mode eval(...); refused in linked mode
+safe-runtime-ref-rejected.check: dynamic-eval — evalSafe/safe-mode eval(...); refused in linked mode
+safe-unchecked-pattern-rejected.check: dynamic-eval — evalSafe/safe-mode eval(...); refused in linked mode
+safe-var-impure-lambda-accepted.check: dynamic-eval — evalSafe/safe-mode eval(...); refused in linked mode
+safe-var-pure-fn-rejected.check: dynamic-eval — evalSafe/safe-mode eval(...); refused in linked mode
+safe-var-pure-lambda-rejected.check: dynamic-eval — evalSafe/safe-mode eval(...); refused in linked mode
+safe-var-write-pure-rejected.check: dynamic-eval — evalSafe/safe-mode eval(...); refused in linked mode
+var-mutation.check: dynamic-eval — the transcript runs eval(...); refused in linked mode
