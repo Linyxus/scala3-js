@@ -5,8 +5,10 @@ package linked
 import scala.concurrent.Future
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
 import scala.scalajs.js
+import scala.scalajs.js.typedarray.ArrayBuffer
 
 import dotty.tools.dotc.ClasspathBlob
+import dotty.tools.io.VirtualDirectory
 import dotty.tools.repl.ReplSession.EvalResponse
 
 /** Stage B functional proof: drives a REAL [[ReplSession]] in `DOTTY_REPL_LINKED`
@@ -142,13 +144,65 @@ object LinkedModeTest:
                 s"ok=${l.ok} error=${l.error}")
             }
           }
-          .map { _ =>
+          .flatMap { _ =>
             val times = linkedTimes.reverse
             note(f"[timing] linked per-line ms: ${times.map(t => f"$t%.0f").mkString(", ")}")
             if times.nonEmpty then
               note(f"[timing] linked median ${median(times)}%.0f ms  min ${times.min}%.0f  max ${times.max}%.0f")
-            checks.toList
+            // t1–t4: cross-line member reuse, on their own fresh session pair.
+            reuseBattery(cpDir, libBuf).map(reuse => checks.toList ++ reuse)
           }
+      }
+    }
+
+  /** t1–t4 — cross-line member reuse: a `def`/class/object member defined on one line
+   *  and FIRST referenced two lines later. Stage B froze only the wrapper's ctor +
+   *  `replMain`, so the later first-reference grew the wrapper's already-frozen module
+   *  → spurious restriction. Stage C's per-line member forcing must make each reuse
+   *  byte-identical to the interpreter.
+   *
+   *  A fresh interp+linked session pair (independent of the a–i battery, whose f/i
+   *  breaches skew the linked session's `res` counter vs the interpreter's) so a
+   *  byte-identical `compare` on the reference line is meaningful. */
+  private def reuseBattery(cpDir: VirtualDirectory, libBuf: ArrayBuffer): Future[List[Check]] =
+    ReplSession.create(cpDir, libBuf, Nil, linked = false).flatMap { interp =>
+      ReplSession.create(cpDir, libBuf, Nil, linked = true).flatMap { linked =>
+        val checks = scala.collection.mutable.ListBuffer.empty[Check]
+
+        /** Drive `code` on both sessions (no assertion) — the setup lines. */
+        def drive(code: String): Future[Unit] =
+          for i <- interp.eval(code); l <- linked.eval(code) yield
+            note(s"[reuse >>> ] ${oneLine(code)}")
+            recordResp("interp", i); recordResp("linked", l)
+
+        /** Drive `code` on both, assert the linked output is OK and byte-identical to
+         *  the interpreter — the cross-line reference line. */
+        def reuse(label: String, code: String): Future[Unit] =
+          for i <- interp.eval(code); l <- linked.eval(code) yield
+            note(s"[reuse ref ] ${oneLine(code)}")
+            recordResp("interp", i); recordResp("linked", l)
+            val same = i.output == l.output && i.stdout == l.stdout && i.ok == l.ok
+            checks += Check(label, same && l.ok,
+              if same && l.ok then s"identical (ok=${l.ok} out=${esc(l.output)})"
+              else s"DIVERGED\n      interp: ok=${i.ok} out=${esc(i.output)} err=${i.error}\n      linked: ok=${l.ok} out=${esc(l.output)} err=${l.error}")
+
+        // t1: def defined, gap, first reference two lines later.
+        drive("def f(n: Int) = n + 1")
+          .flatMap(_ => drive("val g1 = 0"))
+          .flatMap(_ => reuse("t1/cross-line-def-reuse", "f(41)"))
+          // t2: class member first touched two lines later.
+          .flatMap(_ => drive("class C { def m = 7 }"))
+          .flatMap(_ => drive("val g2 = 0"))
+          .flatMap(_ => reuse("t2/class-member-reuse", "new C().m"))
+          // t3: def with a function-typed parameter.
+          .flatMap(_ => drive("def gg(h: Int => Int) = h(1)"))
+          .flatMap(_ => drive("val g3 = 0"))
+          .flatMap(_ => reuse("t3/function-typed-param-reuse", "gg(x => x + 1)"))
+          // t4: object member first touched two lines later.
+          .flatMap(_ => drive("object O4 { def k = 9 }"))
+          .flatMap(_ => drive("val g4 = 0"))
+          .flatMap(_ => reuse("t4/object-member-reuse", "O4.k"))
+          .map(_ => checks.toList)
       }
     }
 

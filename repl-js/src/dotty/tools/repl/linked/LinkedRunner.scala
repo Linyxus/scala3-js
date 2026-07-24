@@ -82,10 +82,21 @@ final class LinkedRunner extends ReplRunner:
       case null => Future.failed(new IllegalStateException("linked image not built"))
       case img =>
         lineCounter += 1
-        val wrapperCN = resolveWrapper(newSjsir, wrapperClassName)
-        val (triggerFiles, moduleId) = LinkedImage.Synth.lineTrigger(lineCounter, wrapperCN)
+        val freshDefs = newSjsir.valuesIterator
+          .map(b => Serializers.deserialize(ByteBuffer.wrap(b))).toList
+        val wrapperCN = resolveWrapper(freshDefs, wrapperClassName)
+        val (triggerFiles, moduleId, _) = LinkedImage.Synth.lineTrigger(lineCounter, wrapperCN, freshDefs)
         val freshIR = toIRFiles(newSjsir) ++ triggerFiles
-        img.tryAddEntries(freshIR).flatMap { res =>
+        // A relink can fail outright (not just breach) when this line's member
+        // forcing reaches a target the image cannot link — treat that like a breach:
+        // restore the committed baseline and surface a clean restriction, never a
+        // corrupt warm linker or a dead session.
+        val relink = img.tryAddEntries(freshIR).recoverWith {
+          case r: LinkedRestriction => Future.failed(r)
+          case e: Throwable => img.restoreBaseline().transformWith(_ =>
+            Future.failed(new LinkedRestriction(linkFailureMessage(e))))
+        }
+        relink.flatMap { res =>
           if res.isAdditive then importAndRun(img.sessionDir, moduleId)
           else img.restoreBaseline().map(_ => throw new LinkedRestriction(restrictionMessage(res)))
         }
@@ -103,11 +114,8 @@ final class LinkedRunner extends ReplRunner:
    *  trigger's `LoadModule` names it exactly (the Scala.js module-class encoding of
    *  `object rs$line$N` — a trailing `$` — is resolved from the bytes, not guessed).
    *  `wrapperClassName` is the driver's `rs$line$N` (the interpreter's mirror name). */
-  private def resolveWrapper(newSjsir: Map[String, Array[Byte]], wrapperClassName: String): ClassName =
-    val moduleClasses = newSjsir.valuesIterator
-      .map(b => Serializers.deserialize(ByteBuffer.wrap(b)))
-      .collect { case cd if cd.kind == ClassKind.ModuleClass => cd.name.name }
-      .toList
+  private def resolveWrapper(freshDefs: Seq[ClassDef], wrapperClassName: String): ClassName =
+    val moduleClasses = freshDefs.collect { case cd if cd.kind == ClassKind.ModuleClass => cd.name.name }
     moduleClasses
       .find(cn => cn.nameString == wrapperClassName || cn.nameString == wrapperClassName + "$")
       .getOrElse(ClassName(wrapperClassName + "$"))
@@ -134,6 +142,11 @@ object LinkedRunner:
       "selection, or a JVM-only stdlib member absent from the linked image " +
       s"(would change ${res.changedPreviouslyEmitted.size} already-linked module(s), e.g. " +
       s"${res.changedPreviouslyEmitted.take(3).mkString(", ")})"
+
+  private def linkFailureMessage(e: Throwable): String =
+    val detail = Option(e.getMessage).map(_.linesIterator.next()).getOrElse(e.getClass.getName.nn)
+    "this line uses a construct unsupported in linked REPL mode: linking its members " +
+      s"into the image failed ($detail)"
 
   private def unsupportedEval: Nothing =
     throw new IllegalStateException("dynamic eval(...) is not supported in linked REPL mode")

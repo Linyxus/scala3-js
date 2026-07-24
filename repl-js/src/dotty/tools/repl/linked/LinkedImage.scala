@@ -323,9 +323,17 @@ object LinkedImage:
      *  calling `run()` executes the line — in the worker process, so `__replRenders`
      *  and `process.stdout` fill exactly as under the interpreter.
      *
-     *  Returns the trigger's IR file and its moduleID (⇒ the emitted `.js` name and
-     *  `run` export the runner imports + calls). */
-    def lineTrigger(lineId: Int, wrapperCN: ClassName): (Seq[IRFile], String) =
+     *  A second, NEVER-called export `touch` force-references every public member of
+     *  this line's fresh classes ([[TouchRoot.lineForce]]), so they freeze into their
+     *  (new) modules at THIS link and a later first-reference (cross-line `def` reuse,
+     *  `object` member access, `new C().m`) stays byte-additive. It lives in its own
+     *  export — a linker root, so its body is linked — rather than the executed `run`
+     *  body, so member forcing never re-runs user code (mirrors the image touch root).
+     *
+     *  Returns the trigger's IR file, its moduleID (⇒ the emitted `.js` name and
+     *  `run` export the runner imports + calls), and the per-line force tally. */
+    def lineTrigger(lineId: Int, wrapperCN: ClassName,
+        freshDefs: Seq[ClassDef]): (Seq[IRFile], String, TouchRoot.LineForceStats) =
       val moduleId = s"linetrigger_$lineId"
       val cn = ClassName(s"linetrigger.Line$lineId$$")
       val thisType = thisTypeOf(cn)
@@ -335,6 +343,14 @@ object LinkedImage:
       val runBody = Block(
         Apply(ApplyFlags.empty, LoadModule(wrapperCN), MethodIdent(replMain), Nil)(VoidType),
         Undefined())
-      val jm = JSMethodDef(jsStaticFlags, StringLiteral("run"), Nil, None, runBody)(EmptyHints, Unv)
-      val cd = moduleClassDef(cn, List(ctor), List(TopLevelMethodExportDef(moduleId, jm)))
-      (Seq(directFile(cd)), moduleId)
+      val runJm = JSMethodDef(jsStaticFlags, StringLiteral("run"), Nil, None, runBody)(EmptyHints, Unv)
+      val runExport = TopLevelMethodExportDef(moduleId, runJm)
+      val (forceStmts, forceStats) = TouchRoot.lineForce(freshDefs)
+      val exports =
+        if forceStmts.isEmpty then List(runExport)
+        else
+          val touchJm = JSMethodDef(jsStaticFlags, StringLiteral("touch"), Nil, None,
+            Block(forceStmts :+ Undefined()))(EmptyHints, Unv)
+          List(runExport, TopLevelMethodExportDef(moduleId, touchJm))
+      val cd = moduleClassDef(cn, List(ctor), exports)
+      (Seq(directFile(cd)), moduleId, forceStats)

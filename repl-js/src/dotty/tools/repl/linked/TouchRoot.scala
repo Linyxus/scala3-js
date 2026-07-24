@@ -143,6 +143,80 @@ object TouchRoot:
       Seq(new DirectIRFile("mem:replpreamble.sjsir", host,
         Version.fromBytes("replpreamble".getBytes("UTF-8").nn)))
 
+  /** Per-line member forcing (stage C). Given a REPL line's freshly-compiled
+   *  `ClassDef`s, build never-executed touch statements that force every public
+   *  member of those classes into their (new) modules at THIS line's link. Prevents
+   *  a later first-reference — cross-line `def` reuse, `object` member access,
+   *  `new C().m` — from making a member newly-reachable and growing an already-frozen
+   *  module (the stage-B spurious breach).
+   *
+   *  Mirrors [[synthesize]]'s edge shapes (ClassOf / IsInstanceOf / LoadModule / New /
+   *  ApplyStatically-on-`Null` / ApplyStatic) but scoped to the line's own classes,
+   *  with no `computeBad` pre-filter (these classes are fresh, not part of the base
+   *  image; a member whose body reaches an image-excluded target simply breaches — or
+   *  fails to link — this line's relink, which the runner surfaces as a clean
+   *  restriction). Only the three Scala class kinds are touched; JS-native kinds are
+   *  skipped (a later reference to them is a documented residual). Determinism: sorted
+   *  classes + members.
+   *
+   *  Returns the statements (to live in a never-called export) and a skip tally: a
+   *  member with an unrepresentable parameter shape (function/record/… — see
+   *  [[zeroArg]]) is skipped, and a later first-reference to it stays a residual
+   *  breach (rare). */
+  final case class LineForceStats(
+      classes: Int, methods: Int, ctors: Int, modules: Int,
+      classData: Int, argSkipped: Int):
+    def touched: Int = methods + ctors + modules
+
+  def lineForce(freshDefs: Seq[ClassDef]): (List[Tree], LineForceStats) =
+    import ClassKind.*
+    var methods, ctors, modules, classData, argSkipped = 0
+    val stmts = scala.collection.mutable.ArrayBuffer.empty[Tree]
+    def argsFor(m: MethodDef): Option[List[Tree]] =
+      val bs = m.args.map(p => zeroArg(p.ptpe))
+      if bs.forall(_.isDefined) then Some(bs.map(_.get)) else { argSkipped += 1; None }
+    val sorted = freshDefs.sortBy(_.name.name.nameString)
+    for cd <- sorted do
+      val cn = cd.name.name
+      val k = cd.kind
+      if k == Class || k == ModuleClass || k == Interface then
+        // classData + instance tests: cover a later getClass / isInstanceOf / match.
+        stmts += ClassOf(ClassRef(cn))
+        stmts += IsInstanceOf(Null(), ClassType(cn, nullable = false, exact = false))
+        classData += 2
+        // module accessor: cover a later `object O` member access.
+        if k == ModuleClass then
+          stmts += LoadModule(cn)
+          modules += 1
+        // constructor(s): cover a later `new C(...)` (freeze the instantiation now).
+        if k == Class && isConcrete(cd) then
+          for m <- cd.methods.sortBy(_.name.name.nameString)
+              if m.flags.namespace == MemberNamespace.Constructor && m.body.isDefined do
+            argsFor(m).foreach { args => stmts += New(cn, MethodIdent(m.name.name), args); ctors += 1 }
+        // public/static method bodies: cover a later `def` reuse / member call.
+        for m <- cd.methods.sortBy(mm => (mm.flags.namespace.ordinal, mm.name.name.nameString))
+            if m.body.isDefined do
+          m.flags.namespace match
+            case MemberNamespace.Public =>
+              argsFor(m).foreach { args =>
+                stmts += ApplyStatically(ApplyFlags.empty, Null(), cn, MethodIdent(m.name.name), args)(m.resultType)
+                methods += 1 }
+            case MemberNamespace.PublicStatic =>
+              argsFor(m).foreach { args =>
+                stmts += ApplyStatic(ApplyFlags.empty, cn, MethodIdent(m.name.name), args)(m.resultType)
+                methods += 1 }
+            case _ => ()
+    (stmts.toList, LineForceStats(sorted.size, methods, ctors, modules, classData, argSkipped))
+
+  /** A class the linker can `New`: has a concrete constructor and declares no
+   *  unimplemented (bodiless) public method of its own. Conservative — an abstract
+   *  class whose abstractness is only inherited (not self-declared) slips through,
+   *  but forcing its `New` then breaches (or fails) this line's relink, which the
+   *  runner surfaces cleanly rather than crashing. */
+  private def isConcrete(cd: ClassDef): Boolean =
+    cd.methods.exists(m => m.flags.namespace == MemberNamespace.Constructor && m.body.isDefined) &&
+      !cd.methods.exists(m => m.flags.namespace == MemberNamespace.Public && m.body.isEmpty)
+
   /** The method-exclusion predicate [[synthesize]] uses, exposed so callers can
    *  find a member the touch root deliberately did NOT force. */
   def isMethodExcluded(excl: Set[(String, String)], ownerStr: String, simpleName: String): Boolean =
