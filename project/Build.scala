@@ -65,6 +65,7 @@ object Build {
   val packLinkerLibs = taskKey[File]("Pack .sjsir library files into linker-libs.bin")
   val packLibBin = inputKey[File]("Pack a Scala.js library (jars or class directories) into a .bin archive preloadable by the JS REPL: packLibBin <out.bin> <jar-or-classdir>...")
   val updateEvalChecks = taskKey[Unit]("Regenerate the eval scripted-test checkfiles in repl-js/test-resources/eval")
+  val linkedImageSmoke = taskKey[Unit]("Run the linked-image (TouchRoot + LinkedImage) pipeline smoke test under Node")
 
   /** Node-run a linked Scala.js scripted-test main with the packed compiler
    *  archives + suite-specific vars passed via env. Shared by the JSON-REPL eval
@@ -2662,6 +2663,11 @@ object Build {
         ("org.scala-js" %% "scalajs-library" % scalaJSVersion % Provided).cross(CrossVersion.for3Use2_13),
         ("org.scala-js" % "scalajs-javalib" % scalaJSVersion),
         ("be.doeraene" % "sjsir-interpreter_sjs1_2.13" % "0.10.0"),
+        // The full Scala.js linker (analyzer/backend/emitter/StandardImpl), for the
+        // linked-image REPL path (dotty.tools.repl.linked). Cross-published to JS at
+        // the fork's version; DCE'd out of the interpreter worker, which never
+        // references `linked`. See BrowserLinker for the in-repo linker-on-JS proof.
+        ("org.scala-js" %% "scalajs-linker" % scalaJSVersion).cross(CrossVersion.for3Use2_13),
       ),
       target := target.value / "scala3-repl-sjs",
       // Locally publishable (code only) so other Scala.js builds can depend on
@@ -2769,6 +2775,42 @@ object Build {
           "REPL_SCRIPTS_EXCLUDES" -> ((LocalRootProject / baseDirectory).value / "repl-js" / "test" / "scripted-excludes.txt").getAbsolutePath,
         ),
         Nil, baseDirectory.value, failOnError = true, streams.value.log),
+    )
+
+  /** Dev-only harness proving the linked-image pipeline (`dotty.tools.repl.linked`:
+   *  `TouchRoot` + `LinkedImage`) end-to-end inside the fork's artifact world. Kept
+   *  a separate project so its heavy full-linker link stays out of the interpreter
+   *  worker's `main.js` (and its test suites). Run:
+   *  `sbt scala3-repl-linked-smoke-sjs/linkedImageSmoke`. */
+  lazy val `scala3-repl-linked-smoke-sjs` = project.in(file("repl-js-linked-smoke"))
+    .dependsOn(`scala3-repl-sjs`)
+    .enablePlugins(DottyJSPlugin)
+    .settings(
+      name          := "scala3-repl-linked-smoke-sjs",
+      moduleName    := "scala3-repl-linked-smoke",
+      version       := dottyVersion,
+      scalaVersion  := dottyNonBootstrappedVersion,
+      crossPaths    := true,
+      autoScalaLibrary := false,
+      bootstrappedScalaInstanceSettings,
+      Compile / unmanagedSourceDirectories := Seq(baseDirectory.value / "src"),
+      libraryDependencies +=
+        ("org.scala-js" %% "scalajs-library" % scalaJSVersion % Provided).cross(CrossVersion.for3Use2_13),
+      target := target.value / "scala3-repl-linked-smoke-sjs",
+      publish / skip := true,
+      bspEnabled := false,
+      scalaJSUseMainModuleInitializer := true,
+      Compile / mainClass := Some("dotty.tools.repl.linked.LinkedImageSmoke"),
+      scalaJSLinkerConfig ~= { _.withESFeatures(_.withESVersion(ESVersion.ES2018)) },
+      // Link the smoke main, then run it under Node with the packed archives in env
+      // (only linker-libs.bin is used; classpath.bin supplied for symmetry with the
+      // worker launch). Reuses the scripted-test launcher.
+      linkedImageSmoke := runScriptedTests(
+        (`scala3-compiler-cli-sjs` / packClasspath).value,
+        (`scala3-compiler-cli-sjs` / packLinkerLibs).value,
+        { val _ = (Compile / fastLinkJS).value
+          (Compile / fastLinkJS / scalaJSLinkerOutputDirectory).value / "main.js" },
+        Nil, Nil, baseDirectory.value, failOnError = true, streams.value.log),
     )
 
   lazy val `scala3-presentation-compiler` = project.in(file("presentation-compiler"))

@@ -17,6 +17,7 @@ val `scala3-repl` = Build.`scala3-repl`
 val `scala3-repl-sjs` = Build.`scala3-repl-sjs`
 val `scala3-repl-cli-sjs` = Build.`scala3-repl-cli-sjs`
 val `scala3-repl-json-sjs` = Build.`scala3-repl-json-sjs`
+val `scala3-repl-linked-smoke-sjs` = Build.`scala3-repl-linked-smoke-sjs`
 
 // The Standard Library
 val `scala2-library` = Build.`scala2-library`
