@@ -48,7 +48,7 @@ import dotty.tools.io.{VirtualDirectory, AbstractFile}
 class JSReplDriver(
   cpDir: VirtualDirectory,
   sessionDir: VirtualDirectory,
-  runner: InterpreterRunner,
+  runner: ReplRunner,
   extraCpDirs: List[VirtualDirectory] = Nil,
   extraSettings: List[String] = Nil,
   output: String => Unit = s => { js.Dynamic.global.process.stdout.write(s); () },
@@ -200,7 +200,18 @@ class JSReplDriver(
               .sorted
               .foreach(printDiagnostic)
             runError match
-              case Some(e) => failure(updatedState, throwableMessage(e))
+              case Some(e) =>
+                // In linked mode a wrapper that fails to run (a runtime exception,
+                // or a link-restriction breach whose module was never committed)
+                // must not be imported by later lines: its ESM module is either
+                // absent from the image or pinned in a thrown state. Mark it
+                // invalid so `validObjectIndexes` (⇒ prior-wrapper imports) skips
+                // it. The interpreter path keeps its lenient re-run behaviour.
+                val failedState =
+                  if runner.isLinked then
+                    updatedState.copy(invalidObjectIndexes = updatedState.invalidObjectIndexes + newState.objectIndex)
+                  else updatedState
+                failure(failedState, throwableMessage(e))
               case None    => success(updatedState)
         }
       }
@@ -491,6 +502,11 @@ class JSReplDriver(
   private def evalDynamic(
       code: String, bindings: Any, expectedType: String, enclosingSource: String
   ): Either[(Array[String], String), Any] =
+    // The linked image cannot relink + import() synchronously (RECON3 RISK: HIGH),
+    // so dynamic eval(...) has no linked implementation — fail fast and clearly.
+    if !runner.supportsDynamicEval then
+      return Left((Array("dynamic eval(...) is not supported in linked REPL mode"), ""))
+
     val state = currentState
     if state == null then return Left((Array("eval: no active REPL state"), ""))
 

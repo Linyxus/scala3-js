@@ -66,6 +66,7 @@ object Build {
   val packLibBin = inputKey[File]("Pack a Scala.js library (jars or class directories) into a .bin archive preloadable by the JS REPL: packLibBin <out.bin> <jar-or-classdir>...")
   val updateEvalChecks = taskKey[Unit]("Regenerate the eval scripted-test checkfiles in repl-js/test-resources/eval")
   val linkedImageSmoke = taskKey[Unit]("Run the linked-image (TouchRoot + LinkedImage) pipeline smoke test under Node")
+  val linkedModeTest = taskKey[Unit]("Run the stage-B linked-mode REPL functional test (real ReplSession, linked vs interpreter) under Node")
 
   /** Node-run a linked Scala.js scripted-test main with the packed compiler
    *  archives + suite-specific vars passed via env. Shared by the JSON-REPL eval
@@ -2800,17 +2801,25 @@ object Build {
       publish / skip := true,
       bspEnabled := false,
       scalaJSUseMainModuleInitializer := true,
-      Compile / mainClass := Some("dotty.tools.repl.linked.LinkedImageSmoke"),
+      Compile / mainClass := Some("dotty.tools.repl.linked.LinkedSmokeMain"),
       scalaJSLinkerConfig ~= { _.withESFeatures(_.withESVersion(ESVersion.ES2018)) },
       // Link the smoke main, then run it under Node with the packed archives in env
-      // (only linker-libs.bin is used; classpath.bin supplied for symmetry with the
-      // worker launch). Reuses the scripted-test launcher.
+      // (classpath.bin + linker-libs.bin, exactly as the worker launch). Reuses the
+      // scripted-test launcher; `LinkedSmokeMain` dispatches on the CLI arg.
       linkedImageSmoke := runScriptedTests(
         (`scala3-compiler-cli-sjs` / packClasspath).value,
         (`scala3-compiler-cli-sjs` / packLinkerLibs).value,
         { val _ = (Compile / fastLinkJS).value
           (Compile / fastLinkJS / scalaJSLinkerOutputDirectory).value / "main.js" },
         Nil, Nil, baseDirectory.value, failOnError = true, streams.value.log),
+      // The stage-B functional test drives a real ReplSession in linked mode (and an
+      // interpreter session for side-by-side diffs) — same main.js, `mode-test` arg.
+      linkedModeTest := runScriptedTests(
+        (`scala3-compiler-cli-sjs` / packClasspath).value,
+        (`scala3-compiler-cli-sjs` / packLinkerLibs).value,
+        { val _ = (Compile / fastLinkJS).value
+          (Compile / fastLinkJS / scalaJSLinkerOutputDirectory).value / "main.js" },
+        Nil, Seq("mode-test"), baseDirectory.value, failOnError = true, streams.value.log),
     )
 
   lazy val `scala3-presentation-compiler` = project.in(file("presentation-compiler"))

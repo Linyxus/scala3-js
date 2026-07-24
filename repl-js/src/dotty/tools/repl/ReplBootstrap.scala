@@ -33,6 +33,11 @@ object ReplBootstrap:
           ReplSession.create(cpDir, libBuffer, extras)))
       case _ => None
 
+  /** Whether the opt-in linked-image REPL runner is selected (`DOTTY_REPL_LINKED=1`).
+   *  Default (unset) is the interpreter, bit-identical to today. */
+  def linkedModeEnabled: Boolean =
+    env("DOTTY_REPL_LINKED").exists(v => v == "1" || v.equalsIgnoreCase("true"))
+
   /** Extra-library archive paths from `DOTTY_EXTRA_LIBS_BIN` (`:`-separated). */
   def envExtraLibPaths: List[String] =
     env("DOTTY_EXTRA_LIBS_BIN").map(splitPathList).getOrElse(Nil)

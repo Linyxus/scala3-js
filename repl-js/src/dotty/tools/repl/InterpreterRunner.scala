@@ -1,7 +1,6 @@
 package dotty.tools
 package repl
 
-import scala.scalajs.js
 import scala.scalajs.js.typedarray.*
 import scala.concurrent.Future
 import scala.scalajs.concurrent.JSExecutionContext.Implicits.queue
@@ -30,7 +29,9 @@ import java.nio.ByteBuffer
  *  pairs onto the JS-global array `__replRenders`. [[resetBridge]] clears it
  *  before a run and [[readBridge]] collects it after.
  */
-class InterpreterRunner:
+class InterpreterRunner extends ReplRunner:
+  def isLinked: Boolean = false
+
   private var interp = new Interpreter(Semantics.Defaults)
   private var libBuffer: ArrayBuffer = null.asInstanceOf[ArrayBuffer]
   private var extraIR: List[Map[String, Array[Byte]]] = Nil
@@ -61,25 +62,7 @@ class InterpreterRunner:
       (acc, ir) => acc.flatMap(_ => interp.loadIRFiles(toIRFiles(ir)))
     }
 
-  /** Clear the value bridge before running a wrapper.
-   *
-   *  Addressed via `globalThis.__replRenders` (a property on the real global
-   *  object), not a bare `__replRenders` global ref: under a strict-mode runtime
-   *  (Node) assigning to an undeclared bare global throws `ReferenceError`; bun
-   *  tolerated it, Node does not. Must match the wrapper's access built in
-   *  `JSReplCompiler.pushRender`. */
-  def resetBridge(): Unit =
-    js.Dynamic.global.globalThis.__replRenders = new js.Array[Any]()
-
-  /** Collect the `name -> rendered` pairs the wrapper pushed onto the bridge. */
-  def readBridge(): Map[String, String] =
-    val arr = js.Dynamic.global.globalThis.__replRenders.asInstanceOf[js.Array[Any]]
-    val b = Map.newBuilder[String, String]
-    var i = 0
-    while i + 1 < arr.length do
-      b += (arr(i).asInstanceOf[String] -> arr(i + 1).asInstanceOf[String])
-      i += 2
-    b.result()
+  // resetBridge / readBridge are shared, delivery-agnostic, and live in ReplRunner.
 
   /** Load a line's freshly-compiled `.sjsir`, then run its wrapper's `replMain`
    *  (which forces the `object rs$line$N` init — running the user code + render). */

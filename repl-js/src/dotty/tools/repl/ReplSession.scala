@@ -20,7 +20,7 @@ import dotty.tools.io.VirtualDirectory
 final class ReplSession private (
   cpDir: VirtualDirectory,
   sessionDir: VirtualDirectory,
-  runner: InterpreterRunner,
+  runner: ReplRunner,
   extraCpDirs: List[VirtualDirectory],
 ):
   import ReplSession.*
@@ -204,10 +204,17 @@ object ReplSession:
 
   /** Create a session over the bundled classpath + interpreter libraries, with
    *  optional extra libraries (see [[ExtraLib]]) preloaded into both sides.
-   *  Shadowed extra-lib entries (first match wins) are reported on stderr. */
-  def create(cpDir: VirtualDirectory, linkerLibs: ArrayBuffer, extraLibs: List[ExtraLib] = Nil): Future[ReplSession] =
+   *  Shadowed extra-lib entries (first match wins) are reported on stderr.
+   *
+   *  `linked` selects the execution runner: the default (from the environment,
+   *  `DOTTY_REPL_LINKED=1`) is the interpreter unless the flag is set; the tests
+   *  pass it explicitly to build both a linked and an interpreter session in one
+   *  process for a side-by-side comparison. */
+  def create(cpDir: VirtualDirectory, linkerLibs: ArrayBuffer, extraLibs: List[ExtraLib] = Nil,
+      linked: Boolean = ReplBootstrap.linkedModeEnabled): Future[ReplSession] =
     val sessionDir = new VirtualDirectory("(repl-session)", None)
-    val runner = new InterpreterRunner
+    val runner: ReplRunner =
+      if linked then new _root_.dotty.tools.repl.linked.LinkedRunner else new InterpreterRunner
     for (libName, path) <- ExtraLib.shadowedPaths(cpDir, extraLibs) do
       Console.err.println(s"warning: $libName: classpath entry '$path' is shadowed by an earlier entry and ignored")
     runner.loadLibrary(linkerLibs, extraLibs.map(_.sjsir)).map { _ =>

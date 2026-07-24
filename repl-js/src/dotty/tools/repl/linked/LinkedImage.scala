@@ -56,13 +56,52 @@ final class LinkedImage private[linked] (
 
   /** Relink `base ++ accumulated-entries ++ newEntryIR`, diff against the last
    *  snapshot, write only new/changed files back to [[sessionDir]], and return the
-   *  oracle result. The entries accumulate: each call sees all prior entries too. */
+   *  oracle result. The entries accumulate: each call sees all prior entries too.
+   *
+   *  Unconditional: commits and writes back even on a breach. Stage B's per-line
+   *  path uses [[tryAddEntries]] instead, which refuses to commit a breach. */
   def addEntries(newEntryIR: Seq[IRFile]): Future[LinkedImage.RelinkResult] =
     val nextEntries = entriesIR ++ newEntryIR
     LinkedImage.linkOnce(linker, baseIR ++ nextEntries, initializers).map { case (next, ms) =>
       val res = LinkedImage.diffAndWriteback(sessionDir, snap, next, ms)
       entriesIR = nextEntries
       snap = next
+      res
+    }
+
+  /** The current committed entry IR (the wrapper + trigger IR of every line the
+   *  image has accepted so far). */
+  def committedEntries: Seq[IRFile] = entriesIR
+
+  /** Relink `base ++ entries ++ newEntryIR` and diff against the last snapshot,
+   *  but **commit only if the relink is additive** (no previously-emitted module
+   *  changed or removed). On an additive relink the new/changed files are written
+   *  back to [[sessionDir]] and the image advances; on a breach nothing is written
+   *  and the image is left exactly at its prior committed baseline (the caller
+   *  should [[restoreBaseline]] to reset the warm linker's incremental state, then
+   *  surface the breach to the user). */
+  def tryAddEntries(newEntryIR: Seq[IRFile]): Future[LinkedImage.RelinkResult] =
+    val nextEntries = entriesIR ++ newEntryIR
+    LinkedImage.linkOnce(linker, baseIR ++ nextEntries, initializers).map { case (next, ms) =>
+      val res = LinkedImage.diff(snap, next, ms)
+      if res.isAdditive then
+        LinkedImage.writeback(sessionDir, snap, next)
+        entriesIR = nextEntries
+        snap = next
+      res
+    }
+
+  /** Relink the current committed baseline (`base ++ entries`), resetting the warm
+   *  linker's incremental state and re-asserting the on-disk image. Used after a
+   *  [[tryAddEntries]] breach: determinism guarantees this reproduces the committed
+   *  snapshot byte-for-byte (so a correct generator yields zero changed files). */
+  def restoreBaseline(): Future[LinkedImage.RelinkResult] =
+    LinkedImage.linkOnce(linker, baseIR ++ entriesIR, initializers).map { case (next, ms) =>
+      val res = LinkedImage.diff(snap, next, ms)
+      // Defensive: rewrite any drift (there should be none) and re-anchor snap.
+      if (res.newModules.nonEmpty || res.changedPreviouslyEmitted.nonEmpty || res.removed.nonEmpty) then
+        LinkedImage.writeback(sessionDir, snap, next)
+        snap = next
       res
     }
 
@@ -94,11 +133,24 @@ object LinkedImage:
 
   private val logger = new ScalaConsoleLogger(Level.Error)
 
+  /** A fresh `StandardImpl.linker(config)` — a warm, incremental (non-batch)
+   *  linker. Kept process-global by the linked runner so `:reset` reuses one warm
+   *  linker (one ~2 s relink) instead of a full cold rebuild. */
+  def newLinker(): Linker = StandardImpl.linker(config)
+
   /** Build the image once from `baseIR` (stdlib + extra + touch root + boot module)
-   *  and `initializers` (the boot initializer), snapshotting into `sessionDir`. */
+   *  and `initializers` (the boot initializer), snapshotting into `sessionDir`,
+   *  with a fresh linker. */
   def buildImage(baseIR: Seq[IRFile], initializers: Seq[ModuleInitializer],
       sessionDir: String): Future[(LinkedImage, RelinkResult)] =
-    val linker = StandardImpl.linker(config)
+    buildInto(newLinker(), baseIR, initializers, sessionDir)
+
+  /** Like [[buildImage]] but links with a caller-supplied (possibly warm) `linker`,
+   *  so `:reset` can reuse one process-global linker across sessions: relinking the
+   *  base into a fresh `sessionDir` costs one warm relink, not a cold rebuild. The
+   *  linker's incremental state is reset to the base by this link. */
+  def buildInto(linker: Linker, baseIR: Seq[IRFile], initializers: Seq[ModuleInitializer],
+      sessionDir: String): Future[(LinkedImage, RelinkResult)] =
     linkOnce(linker, baseIR, initializers).map { case (next, ms) =>
       Fs.ensureDir(sessionDir)
       Fs.writePackageJson(sessionDir)
@@ -120,15 +172,31 @@ object LinkedImage:
 
   private def diffAndWriteback(sessionDir: String, prev: Map[String, Array[Byte]],
       next: Map[String, Array[Byte]], ms: Double): RelinkResult =
+    val res = diff(prev, next, ms)
+    writeback(sessionDir, prev, next)
+    res
+
+  /** Pure oracle: which modules are new / changed / removed relative to `prev`. */
+  private def diff(prev: Map[String, Array[Byte]], next: Map[String, Array[Byte]],
+      ms: Double): RelinkResult =
     val prevKeys = prev.keySet
     val nextKeys = next.keySet
     val newModules = (nextKeys diff prevKeys).toList.sorted
     val removed = (prevKeys diff nextKeys).toList.sorted
     val changed = (prevKeys intersect nextKeys).iterator
       .filter(k => !bytesEqual(prev(k), next(k))).toList.sorted
+    RelinkResult(newModules, changed, removed, ms)
+
+  /** Write only new/changed files and delete removed ones (diff-only writeback). */
+  private def writeback(sessionDir: String, prev: Map[String, Array[Byte]],
+      next: Map[String, Array[Byte]]): Unit =
+    val prevKeys = prev.keySet
+    val nextKeys = next.keySet
+    val newModules = nextKeys diff prevKeys
+    val removed = prevKeys diff nextKeys
+    val changed = (prevKeys intersect nextKeys).filter(k => !bytesEqual(prev(k), next(k)))
     (newModules ++ changed).foreach(n => Fs.writeFileBytes(joinPath(sessionDir, n), next(n)))
     removed.foreach(n => Fs.deleteFile(joinPath(sessionDir, n)))
-    RelinkResult(newModules, changed, removed, ms)
 
   private def bytesEqual(a: Array[Byte], b: Array[Byte]): Boolean =
     (a.length == b.length) && {
@@ -243,3 +311,30 @@ object LinkedImage:
       val body = ApplyStatically(ApplyFlags.empty, Null(), targetClass,
         MethodIdent(targetMethod), Nil)(resultType)
       exportModule(cnStr, moduleId, exportName, body)
+
+    /** The per-line execution trigger ([[LinkedRunner]]).
+     *
+     *  A ModuleClass exported top-level under moduleID `linetrigger_<lineId>` with a
+     *  single exported method `run()` whose body loads and runs the REPL wrapper
+     *  `object rs$line$N` (module class `<wrapperClassName>$`): `LoadModule` forces
+     *  the wrapper's module accessor + constructor (the user code + injected
+     *  `pushRender`s), and the trailing `replMain()` is the same no-op trigger the
+     *  interpreter invokes. Importing `linetrigger_<lineId>.js` defines the function;
+     *  calling `run()` executes the line — in the worker process, so `__replRenders`
+     *  and `process.stdout` fill exactly as under the interpreter.
+     *
+     *  Returns the trigger's IR file and its moduleID (⇒ the emitted `.js` name and
+     *  `run` export the runner imports + calls). */
+    def lineTrigger(lineId: Int, wrapperCN: ClassName): (Seq[IRFile], String) =
+      val moduleId = s"linetrigger_$lineId"
+      val cn = ClassName(s"linetrigger.Line$lineId$$")
+      val thisType = thisTypeOf(cn)
+      val replMain = MethodName("replMain", Nil, VoidRef)
+      val ctor = MethodDef(ctorFlags, MethodIdent(NoArgConstructorName), NoOrig, Nil, VoidType,
+        Some(Block(superObjectCtor(thisType), StoreModule())))(EmptyHints, Unv)
+      val runBody = Block(
+        Apply(ApplyFlags.empty, LoadModule(wrapperCN), MethodIdent(replMain), Nil)(VoidType),
+        Undefined())
+      val jm = JSMethodDef(jsStaticFlags, StringLiteral("run"), Nil, None, runBody)(EmptyHints, Unv)
+      val cd = moduleClassDef(cn, List(ctor), List(TopLevelMethodExportDef(moduleId, jm)))
+      (Seq(directFile(cd)), moduleId)

@@ -84,6 +84,65 @@ object TouchRoot:
     }
     Built(files, stats, bad, badModules, structBad)
 
+  /** A well-typed, never-executed zero value of `tpe`, or None if unrepresentable
+   *  (typed closures, records, void, nothing). Shared by [[synthesize]] and
+   *  [[forceMethodsModule]]. */
+  def zeroArg(tpe: Type): Option[Tree] = tpe match
+    case _: ClosureType | _: RecordType | VoidType | NothingType | AnyNotNullType => None
+    case ClassType(_, false, _) | ArrayType(_, false, _) => Some(AsInstanceOf(Null(), tpe))
+    case _ => Some(zeroOf(tpe))
+
+  /** Force-emit specific methods into the image **regardless of the `computeBad`
+   *  pre-filter** — for members the REPL's own generated wrappers always call but
+   *  that `computeBad` conservatively (and, here, falsely) rejects. Chiefly
+   *  `scala.runtime.ReplRenderer.replStringOf`, which every rendered binding
+   *  invokes: `computeBad` marks it bad (its array/tuple branches transitively
+   *  reference members it can't prove present), yet the real linker links it fine
+   *  (a wrapper that calls it links). Freezing it — and its private helpers, pulled
+   *  in transitively — in the image at build time keeps each line byte-additive.
+   *
+   *  `targets` is a set of (owner class nameString, method simpleName); every
+   *  matching concrete public/static overload is forced via the same never-executed
+   *  `ApplyStatically`/`ApplyStatic` edges the touch root uses. Safe because forcing
+   *  is monotonic: if a line's wrapper relink links the method, so does the image. */
+  def forceMethodsModule(baseDefs: Seq[ClassDef], targets: Set[(String, String)]): Seq[IRFile] =
+    val NoOrig = NoOriginalName
+    val EmptyHints = OptimizerHints.empty
+    val Unv = Version.Unversioned
+    val owners = targets.map(_._1)
+    val stmts = scala.collection.mutable.ArrayBuffer.empty[Tree]
+    for cd <- baseDefs.sortBy(_.name.name.nameString) if owners.contains(cd.name.name.nameString)
+        m <- cd.methods.sortBy(mm => (mm.flags.namespace.ordinal, mm.name.name.nameString))
+        if m.body.isDefined && targets.contains((cd.name.name.nameString, m.name.name.simpleName.nameString)) do
+      val cn = cd.name.name
+      val argOpts = m.args.map(p => zeroArg(p.ptpe))
+      if argOpts.forall(_.isDefined) then
+        val args = argOpts.map(_.get)
+        m.flags.namespace match
+          case MemberNamespace.Public =>
+            stmts += ApplyStatically(ApplyFlags.empty, Null(), cn, MethodIdent(m.name.name), args)(m.resultType)
+          case MemberNamespace.PublicStatic =>
+            stmts += ApplyStatic(ApplyFlags.empty, cn, MethodIdent(m.name.name), args)(m.resultType)
+          case _ => ()
+    if stmts.isEmpty then Nil
+    else
+      val jsStaticFlags = MemberFlags.empty.withNamespace(MemberNamespace.PublicStatic)
+      val hostName = ClassName("replpreamble.Exports$")
+      val hostType = ClassType(hostName, nullable = false, exact = false)
+      val hostCtor = MethodDef(MemberFlags.empty.withNamespace(MemberNamespace.Constructor),
+        MethodIdent(NoArgConstructorName), NoOrig, Nil, VoidType,
+        Some(Block(
+          ApplyStatically(ApplyFlags.empty.withConstructor(true), This()(hostType),
+            ObjectClass, MethodIdent(NoArgConstructorName), Nil)(VoidType),
+          StoreModule())))(EmptyHints, Unv)
+      val jm = JSMethodDef(jsStaticFlags, StringLiteral("replpreamble"), Nil, None,
+        Block(stmts.toList :+ Undefined()))(EmptyHints, Unv)
+      val host = ClassDef(ClassIdent(hostName), NoOrig, ClassKind.ModuleClass, None,
+        Some(ClassIdent(ObjectClass)), Nil, None, None,
+        Nil, List(hostCtor), None, Nil, Nil, List(TopLevelMethodExportDef("replpreamble", jm)))(EmptyHints)
+      Seq(new DirectIRFile("mem:replpreamble.sjsir", host,
+        Version.fromBytes("replpreamble".getBytes("UTF-8").nn)))
+
   /** The method-exclusion predicate [[synthesize]] uses, exposed so callers can
    *  find a member the touch root deliberately did NOT force. */
   def isMethodExcluded(excl: Set[(String, String)], ownerStr: String, simpleName: String): Boolean =
