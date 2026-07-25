@@ -26,7 +26,9 @@ import dotty.tools.io.{AbstractFile, VirtualDirectory}
  *     `.sjsir`, then packed — no pre-built binary fixtures to go stale;
  *   - end-to-end sessions: [[ReplSession]]s created with the fixture libs
  *     preloaded, exercising typechecking, execution, cross-lib dependencies,
- *     shadowing order, `:reset` persistence, and the env-var bootstrap path.
+ *     shadowing order, `:reset` persistence, the env-var bootstrap path, and
+ *     native companion JS modules reached through `@js.native` facades (see
+ *     [[JSModuleRegistry]]).
  */
 object ExtraLibsTests:
 
@@ -49,7 +51,8 @@ object ExtraLibsTests:
                 (p3, f3) <- controlSessionChecks(cpDir, libBuf)
                 (p4, f4) <- shadowOrderChecks(cpDir, libBuf, fx)
                 (p5, f5) <- envVarChecks(cpDir, libBuf, fx)
-              yield (p0 + 1 + p1 + p2 + p3 + p4 + p5, f0 + f1 + f2 + f3 + f4 + f5)
+                (p6, f6) <- nativeModuleChecks(cpDir, libBuf, fx)
+              yield (p0 + 1 + p1 + p2 + p3 + p4 + p5 + p6, f0 + f1 + f2 + f3 + f4 + f5 + f6)
         }
       case _ =>
         println("FAIL extra-libs (set DOTTY_CLASSPATH_BIN and DOTTY_LINKER_LIBS_BIN)")
@@ -93,10 +96,33 @@ object ExtraLibsTests:
       check(lib.sjsir.keySet == Set("p/A.sjsir", "p/A$.sjsir"), s"sjsir split wrong: ${lib.sjsir.keySet}")
         && check(ClasspathBlob.filesUnder(lib.cpDir).map(_._1) == List("p/A.class", "p/A.tasty"), "classpath split wrong")
     }),
+    Check("extra-lib-js-module-split", () => Future.successful {
+      val lib = ExtraLib.fromArchive("t.bin", mkArchive(List(
+        ("p/A.tasty", Array[Byte](1)),
+        ("p/A.sjsir", Array[Byte](2)),
+        ("js-modules/testNative.js", utf8("exports.marker = \"m\";\n")),
+        ("js-modules/notes.txt", Array[Byte](3)), // only `.js` is a module
+      )))
+      check(lib.jsModules.keySet == Set("testNative"), s"jsModules split wrong: ${lib.jsModules.keySet}")
+        && check(lib.jsModules("testNative") == "exports.marker = \"m\";\n", s"module text wrong: ${lib.jsModules("testNative")}")
+        && check(lib.sjsir.keySet == Set("p/A.sjsir"), s"sjsir split wrong: ${lib.sjsir.keySet}")
+        && check(ClasspathBlob.filesUnder(lib.cpDir).map(_._1) == List("js-modules/notes.txt", "p/A.tasty"),
+          s"classpath split wrong: ${ClasspathBlob.filesUnder(lib.cpDir).map(_._1)}")
+    }),
+    Check("js-module-name-validation", () => Future.successful {
+      val valid = List("testNative", "aukGrepEngine", "_$x9", "$", "class")
+      val invalid = List("", "auk-grep-engine", "@scope/pkg", "9lives", "a b", "a.b")
+      check(valid.forall(JSModuleRegistry.isValidModuleName), s"rejected a valid name: $valid")
+        && check(!invalid.exists(JSModuleRegistry.isValidModuleName), s"accepted an invalid name: $invalid")
+        && check(
+          try { JSModuleRegistry.register("auk-grep-engine", "exports.x = 1;"); false }
+          catch case e: IllegalArgumentException => e.getMessage.contains("auk-grep-engine"),
+          "register should reject an invalid name, naming it")
+    }),
     Check("empty-archive", () => Future.successful {
       val lib = ExtraLib.fromArchive("e.bin", mkArchive(Nil))
       check(ClasspathBlob.loadEntries(mkArchive(Nil)).isEmpty, "expected no entries")
-        && check(lib.sjsir.isEmpty && ClasspathBlob.filesUnder(lib.cpDir).isEmpty, "expected empty lib")
+        && check(lib.sjsir.isEmpty && lib.jsModules.isEmpty && ClasspathBlob.filesUnder(lib.cpDir).isEmpty, "expected empty lib")
     }),
     Check("malformed-archive-throws", () => Future.successful {
       val buf = new ArrayBuffer(8)
@@ -130,6 +156,7 @@ object ExtraLibsTests:
     libA: ExtraLib, libABuf: ArrayBuffer,
     libB: ExtraLib, libBBuf: ArrayBuffer,
     dup1: ExtraLib, dup2: ExtraLib,
+    nativeLib: ExtraLib, dupNativeA: ExtraLib, dupNativeB: ExtraLib,
   )
 
   private val libASource =
@@ -176,20 +203,73 @@ object ExtraLibsTests:
        |  def which: String = "$which"
        |""".stripMargin
 
+  /** Typed facades over native companion JS modules. `TestNative`'s module is
+   *  shipped in the same archive; `MissingNative`'s is deliberately never
+   *  shipped; `DupNative`'s is shipped twice, by two later archives. */
+  private val nativeFacadeSource =
+    """package nativelib
+      |
+      |import scala.scalajs.js
+      |import scala.scalajs.js.annotation.JSImport
+      |
+      |@js.native
+      |@JSImport("testNative", JSImport.Namespace, globalFallback = "__replJSModules.testNative")
+      |object TestNative extends js.Object:
+      |  val marker: String = js.native
+      |  def greet(name: String): String = js.native
+      |  def baseName(p: String): String = js.native
+      |  def totalLoads(): Int = js.native
+      |
+      |@js.native
+      |@JSImport("missingNative", JSImport.Namespace, globalFallback = "__replJSModules.missingNative")
+      |object MissingNative extends js.Object:
+      |  def anything(): String = js.native
+      |
+      |@js.native
+      |@JSImport("dupNative", JSImport.Namespace, globalFallback = "__replJSModules.dupNative")
+      |object DupNative extends js.Object:
+      |  val which: String = js.native
+      |""".stripMargin
+
+  /** A CommonJS module: exercises `require`, and counts its own executions in a
+   *  global so a second load would be visible through the *first* exports. */
+  private val testNativeModule =
+    """var path = require("node:path");
+      |globalThis.__testNativeLoads = (globalThis.__testNativeLoads || 0) + 1;
+      |exports.marker = "native-marker";
+      |exports.greet = function (name) { return "Hello from JS, " + name + "!"; };
+      |exports.baseName = function (p) { return path.basename(p); };
+      |exports.totalLoads = function () { return globalThis.__testNativeLoads | 0; };
+      |""".stripMargin
+
+  private def dupNativeModule(which: String) =
+    s"""exports.which = "$which";
+       |""".stripMargin
+
   private def compileFixtures(cpDir: VirtualDirectory): Either[String, Fixtures] =
     for
       aOut <- FixtureDriver(List(cpDir)).compileVirtual(List(("FixtureLib.scala", libASource)))
       bOut <- FixtureDriver(List(cpDir, aOut)).compileVirtual(List(("FixtureLibB.scala", libBSource)))
       d1   <- FixtureDriver(List(cpDir)).compileVirtual(List(("Dup1.scala", dupSource("first"))))
       d2   <- FixtureDriver(List(cpDir)).compileVirtual(List(("Dup2.scala", dupSource("second"))))
+      nOut <- FixtureDriver(List(cpDir)).compileVirtual(List(("NativeFacades.scala", nativeFacadeSource)))
     yield
       val aBuf = mkArchive(ClasspathBlob.entriesOf(aOut))
       val bBuf = mkArchive(ClasspathBlob.entriesOf(bOut))
+      // The facade archive carries its companion `.js` alongside the compiled
+      // halves — the shape `packLibraryBin` produces.
+      val nBuf = mkArchive(ClasspathBlob.entriesOf(nOut)
+        :+ (ExtraLib.JSModulePrefix + "testNative.js", utf8(testNativeModule)))
+      def dupNativeArchive(which: String) =
+        mkArchive(List((ExtraLib.JSModulePrefix + "dupNative.js", utf8(dupNativeModule(which)))))
       Fixtures(
         ExtraLib.fromArchive("liba.bin", aBuf), aBuf,
         ExtraLib.fromArchive("libb.bin", bBuf), bBuf,
         ExtraLib.fromArchive("dup1.bin", mkArchive(ClasspathBlob.entriesOf(d1))),
         ExtraLib.fromArchive("dup2.bin", mkArchive(ClasspathBlob.entriesOf(d2))),
+        ExtraLib.fromArchive("native.bin", nBuf),
+        ExtraLib.fromArchive("dupa.bin", dupNativeArchive("first")),
+        ExtraLib.fromArchive("dupb.bin", dupNativeArchive("second")),
       )
 
   /** Sanity checks on the packed fixtures + the shadow-detection helper. */
@@ -323,6 +403,47 @@ object ExtraLibsTests:
       ),
     ))
 
+  /** Native companion JS modules: an archive-shipped CommonJS module reached
+   *  through a typed `@js.native @JSImport(…, globalFallback = …)` facade, plus
+   *  the failure modes — an unshipped module, and a module name claimed twice. */
+  private def nativeModuleChecks(cpDir: VirtualDirectory, libBuf: ArrayBuffer, fx: Fixtures): Future[(Int, Int)] =
+    // Registration warnings are printed synchronously by `create`, before the
+    // returned future completes, so the capture can be lifted straight away.
+    val (sessionF, warnings) =
+      captureStderr(ReplSession.create(cpDir, libBuf, List(fx.nativeLib, fx.dupNativeA, fx.dupNativeB)))
+    sessionF.flatMap { s =>
+      runChecks(List(
+        Check("native-modules-registered", () => Future.successful {
+          check(JSModuleRegistry.registered == List("dupNative", "testNative"),
+            s"registered: ${JSModuleRegistry.registered}")
+        }),
+        Check("native-duplicate-warning", () => Future.successful {
+          check(warnings.contains("warning: dupb.bin: JS module 'dupNative' is already registered and ignored"),
+            s"stderr was: $warnings")
+        }),
+        Check("native-call-method", () => expectOutput(s,
+          """nativelib.TestNative.greet("REPL")""", """val res0: String = "Hello from JS, REPL!"""")),
+        Check("native-read-property", () => expectOutput(s,
+          "nativelib.TestNative.marker", """val res1: String = "native-marker"""")),
+        Check("native-module-used-require", () => expectOutput(s,
+          """nativelib.TestNative.baseName("/tmp/a/b/engine.js")""", """val res2: String = "engine.js"""")),
+        Check("native-module-ran-once", () => expectOutput(s,
+          "nativelib.TestNative.totalLoads()", "val res3: Int = 1")),
+        Check("native-duplicate-first-wins", () => expectOutput(s,
+          "nativelib.DupNative.which", """val res4: String = "first"""")),
+        Check("native-missing-module-error", () => s.eval("nativelib.MissingNative.anything()").map { r =>
+          check(!r.ok && r.error.exists(e =>
+              e.contains("no JS module 'missingNative' registered") && e.contains("testNative")),
+            s"got ok=${r.ok} error=${r.error}")
+        }),
+        Check("native-survives-reset", () => s.reset().flatMap(_ =>
+          expectOutput(s, """nativelib.TestNative.greet("again")""",
+            """val res0: String = "Hello from JS, again!""""))),
+        Check("native-no-reload-on-reset", () => expectOutput(s,
+          "nativelib.TestNative.totalLoads()", "val res1: Int = 1")),
+      ))
+    }
+
   // --- in-process fixture compiler ---------------------------------------------
 
   /** Batch-compiles virtual sources with `-scalajs` against in-memory classpath
@@ -434,6 +555,32 @@ object ExtraLibsTests:
         i += 1
       pos += bytes.length
     buf
+
+  private def utf8(s: String): Array[Byte] =
+    val encoder = js.Dynamic.newInstance(js.Dynamic.global.TextEncoder)()
+    val bytes = encoder.encode(s).asInstanceOf[Uint8Array]
+    Array.tabulate(bytes.length)(i => bytes(i).toByte)
+
+  /** Run `body` with stderr diverted, returning its value and what was written.
+   *  Both routes are covered, as in `ReplSession.captureProcessOutput`. */
+  private def captureStderr[A](body: => A): (A, String) =
+    val out = new StringBuilder
+    val console = js.Dynamic.global.console
+    val errObj = js.Dynamic.global.process.stderr
+    val oldError = console.error
+    val oldWrite = errObj.write
+    console.updateDynamic("error")(((chunk: js.Any) =>
+      out.append(chunk.toString).append("\n")
+      ()
+    ): js.Function1[js.Any, Unit])
+    errObj.updateDynamic("write")(((chunk: js.Any) =>
+      out.append(chunk.toString)
+      true
+    ): js.Function1[js.Any, Boolean])
+    try (body, out.toString)
+    finally
+      console.updateDynamic("error")(oldError)
+      errObj.updateDynamic("write")(oldWrite)
 
   /** Write a buffer to a fresh temp file, returning its path. */
   private def writeTempFile(name: String, buffer: ArrayBuffer): String =

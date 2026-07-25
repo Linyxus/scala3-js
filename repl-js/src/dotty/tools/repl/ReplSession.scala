@@ -203,16 +203,28 @@ object ReplSession:
   )
 
   /** Create a session over the bundled classpath + interpreter libraries, with
-   *  optional extra libraries (see [[ExtraLib]]) preloaded into both sides.
+   *  optional extra libraries (see [[ExtraLib]]) preloaded into all three sides.
    *  Shadowed extra-lib entries (first match wins) are reported on stderr. */
   def create(cpDir: VirtualDirectory, linkerLibs: ArrayBuffer, extraLibs: List[ExtraLib] = Nil): Future[ReplSession] =
     val sessionDir = new VirtualDirectory("(repl-session)", None)
     val runner = new InterpreterRunner
     for (libName, path) <- ExtraLib.shadowedPaths(cpDir, extraLibs) do
       Console.err.println(s"warning: $libName: classpath entry '$path' is shadowed by an earlier entry and ignored")
+    registerJSModules(extraLibs)
     runner.loadLibrary(linkerLibs, extraLibs.map(_.sjsir)).map { _ =>
       new ReplSession(cpDir, sessionDir, runner, extraLibs.map(_.cpDir))
     }
+
+  /** Publish the extra libraries' native companion JS modules, in classpath
+   *  order, before any IR is loaded — a preloaded class's static initializer may
+   *  already reach for a facade, and `loadIRFiles` runs those eagerly. */
+  private def registerJSModules(extraLibs: List[ExtraLib]): Unit =
+    for
+      lib <- extraLibs
+      (moduleName, code) <- lib.jsModules.toList.sortBy(_._1)
+    do
+      if !JSModuleRegistry.register(moduleName, code) then
+        Console.err.println(s"warning: ${lib.name}: JS module '$moduleName' is already registered and ignored")
 
   private def throwableMessage(e: Throwable): String =
     Option(e.getMessage).filter(_.nonEmpty).getOrElse(e.getClass.getName)
