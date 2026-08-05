@@ -20,6 +20,14 @@ object JsonProtocol:
     eval: Option[ReplSession.EvalResponse] = None,
   )
 
+  /** Version announced in the [[hello]] notice, bumped whenever the shape of the
+   *  worker → parent traffic changes. 2 added the liveness notices below. */
+  final val ProtocolVersion = 2
+
+  /** Cadence of the [[tick]] liveness notice while a request is in flight. Both
+   *  the announced `tickMs` and the worker's actual timer read this. */
+  final val TickMs = 1000
+
   def evalRequest(code: String): String =
     stringify(js.Dynamic.literal(op = "eval", code = code))
 
@@ -32,20 +40,23 @@ object JsonProtocol:
     stringify(js.Dynamic.literal(op = "shutdown"))
 
   /** Handle one request `line` against `session`. Returns the response JSON
-   *  string and whether the worker should stop (a `shutdown` request). */
-  def respond(session: ReplSession, line: String): Future[(String, Boolean)] =
-    respondDetailed(session, line).map(r => (r.json, r.shouldStop))
+   *  string and whether the worker should stop (a `shutdown` request).
+   *
+   *  `onPhase` receives the eval pipeline's stage transitions as they happen;
+   *  the worker turns them into [[progress]] notices. */
+  def respond(session: ReplSession, line: String, onPhase: String => Unit = _ => ()): Future[(String, Boolean)] =
+    respondDetailed(session, line, onPhase).map(r => (r.json, r.shouldStop))
 
   /** Like [[respond]], but keeps the typed eval result for in-process clients
    *  that need data not represented on the JSON wire, such as output ordering. */
-  def respondDetailed(session: ReplSession, line: String): Future[Response] =
+  def respondDetailed(session: ReplSession, line: String, onPhase: String => Unit = _ => ()): Future[Response] =
     parseJson(line) match
       case Left(error) => Future.successful(Response(protocolError(error), false))
       case Right(req) =>
         stringField(req, "op") match
           case Some("eval") =>
             stringField(req, "code") match
-              case Some(code) => session.eval(code).map(r => Response(evalResponse(r), false, Some(r)))
+              case Some(code) => session.eval(code, onPhase).map(r => Response(evalResponse(r), false, Some(r)))
               case None       => Future.successful(Response(protocolError("eval.code must be a string"), false))
           case Some("reset") =>
             stringArrayField(req, "settings") match
@@ -80,6 +91,33 @@ object JsonProtocol:
 
   def protocolError(error: String): String =
     stringify(js.Dynamic.literal(op = "protocol", ok = false, error = error))
+
+  // --- unsolicited worker → parent notices -----------------------------------
+  //
+  // Lines the worker writes outside the request → response exchange, so a parent
+  // can tell "still working" from "hung" without waiting for the reply. Each is a
+  // whole JSON object on its own line, framed exactly like a response, and each
+  // is written the moment it happens (never buffered).
+
+  /** The worker's first line, written before the (slow, asynchronous) session is
+   *  created so the parent learns the protocol version and tick cadence at once. */
+  def hello(pid: Int): String =
+    stringify(js.Dynamic.literal(op = "hello", protocol = ProtocolVersion, tickMs = TickMs, pid = pid))
+
+  /** Written the instant a request is dequeued, before it is acted on. */
+  def received(): String =
+    stringify(js.Dynamic.literal(op = "received"))
+
+  /** Written every [[TickMs]] for as long as a request is in flight. `seq` counts
+   *  monotonically over the worker's lifetime, not per request. */
+  def tick(seq: Int): String =
+    stringify(js.Dynamic.literal(op = "tick", seq = seq))
+
+  /** Written at each stage transition of the eval pipeline. `phase` is an opaque
+   *  lowercase token: it names whatever stages the pipeline actually has, so
+   *  parents should display it rather than enumerate it. */
+  def progress(phase: String): String =
+    stringify(js.Dynamic.literal(op = "progress", phase = phase))
 
   // --- helpers ---------------------------------------------------------------
 

@@ -134,19 +134,23 @@ class JSReplDriver(
     evalLineResult(input, state).map(_.state)
 
   /** Evaluate one line of input, returning success/error metadata as well as
-   *  the next REPL state. Intended for machine protocols such as JSONL stdio. */
-  def evalLineResult(input: String, state: State): Future[EvalResult] =
+   *  the next REPL state. Intended for machine protocols such as JSONL stdio.
+   *
+   *  `onPhase` is called with an opaque lowercase token at each stage transition
+   *  of the pipeline below, so a machine front-end can report liveness while a
+   *  slow line is in flight. It must be cheap and must not throw. */
+  def evalLineResult(input: String, state: State, onPhase: String => Unit = _ => ()): Future[EvalResult] =
     given State = state
-    interpret(ParseResult.complete(input))
+    interpret(ParseResult.complete(input), onPhase)
 
-  private def interpret(res: ParseResult)(using state: State): Future[EvalResult] =
+  private def interpret(res: ParseResult, onPhase: String => Unit)(using state: State): Future[EvalResult] =
     res match
       case parsed: Parsed if parsed.source.content.mkString.startsWith("//>") =>
         outPrintln("Please use `:dep com.example::artifact:version` to add dependencies in the REPL")
         Future.successful(success(state))
       case parsed: Parsed if parsed.trees.nonEmpty =>
         propagateLanguageImports(parsed.trees)
-        compile(parsed, state)
+        compile(parsed, state, onPhase)
       case SyntaxErrors(_, errs, _) =>
         val next = displayErrors(errs, state)
         Future.successful(failure(next, diagnosticsMessage(errs)))
@@ -155,11 +159,16 @@ class JSReplDriver(
       case _ =>
         Future.successful(success(state))
 
-  /** Compile `parsed`, run the wrapper, then render its definitions. */
-  private def compile(parsed: Parsed, istate: State): Future[EvalResult] =
+  /** Compile `parsed`, run the wrapper, then render its definitions. Those three
+   *  stages are the pipeline's real seams, and are what `onPhase` reports: there
+   *  is no link step to report, since each line's `.sjsir` goes straight into the
+   *  interpreter (see [[InterpreterRunner]]) rather than through the linker. */
+  private def compile(parsed: Parsed, istate: State, onPhase: String => Unit): Future[EvalResult] =
     def extractNewestWrapper(tree: untpd.Tree): Name = tree match
       case PackageDef(_, (obj: untpd.ModuleDef) :: Nil) => obj.name.moduleClassName
       case _ => nme.NO_NAME
+
+    onPhase("compiling")
 
     given State =
       val state0 = newRun(istate, parsed.reporter)
@@ -187,7 +196,9 @@ class JSReplDriver(
         // import this line's own wrapper.
         currentState = newStateWithImports
 
+        onPhase("running")
         runWrapper(newState.objectIndex).map { runError =>
+          onPhase("rendering")
           inContext(newState.context):
             val (updatedState, definitions) =
               if ctx.settings.XreplDisableDisplay.value then (newStateWithImports, Seq.empty)

@@ -53,12 +53,17 @@ final class ReplSession private (
 
   def version: Int = stateVersion
 
-  def eval(code: String): Future[EvalResponse] =
+  /** Evaluate `code` against the session state. `onPhase` is called with the
+   *  driver's pipeline stage transitions as they happen — note that it fires
+   *  while [[captureProcessOutput]] has `process.stdout.write` patched, so a
+   *  caller reporting phases on stdout must hold its own pre-patch reference to
+   *  the real `write` (see `JsonMain.rawWrite`). */
+  def eval(code: String, onPhase: String => Unit = _ => ()): Future[EvalResponse] =
     val output = new StringBuilder
     val chunks = ListBuffer.empty[OutputChunk]
     currentOutput = output
     currentChunks = chunks
-    captureProcessOutput(chunks)(driver.evalLineResult(code, state)).map {
+    captureProcessOutput(chunks)(driver.evalLineResult(code, state, onPhase)).map {
       case (result, stdout, stderr) =>
         currentOutput = null
         currentChunks = null
