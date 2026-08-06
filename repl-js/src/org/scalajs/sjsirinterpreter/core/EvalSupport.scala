@@ -5,6 +5,7 @@ import scala.collection.mutable
 
 import org.scalajs.ir.{Names, Types, Position}
 import org.scalajs.ir.Trees.ClassDef
+import org.scalajs.linker.interface.ModuleInitializer
 import org.scalajs.sjsirinterpreter.core.values.Value
 
 /** Synchronous eval driver, living *inside* the interpreter's package so it can
@@ -57,6 +58,28 @@ object EvalSupport:
       val sorted = newInfos.toList.sortBy(_.classNameString)
       interp.executor.runStaticInitializers(sorted)
       interp.executor.initializeTopLevelExports(sorted)
+
+  /** Run `initializers` synchronously on this stack, catching EVERY throwable —
+   *  fatal ones included.
+   *
+   *  `Interpreter.runModuleInitializers` wraps the executor in `Future { … }`,
+   *  whose machinery only catches `NonFatal` failures: a fatal throwable (e.g.
+   *  the compiled `UndefinedBehaviorError`, a `VirtualMachineError`) escapes the
+   *  transformation and the future is never completed — upstream that leaves the
+   *  worker's reply pending forever while its event loop sits idle. Running the
+   *  executor directly lets a plain `catch th: Throwable` see everything, so the
+   *  failure is *returned* and the eval settles.
+   *
+   *  Needs only the `private[core]` `executor` — NOT the `classInfosOf` field
+   *  reach-in above, which is fastopt-only (fullLinkJS minifies the field name
+   *  the scan matches on); the REPL's per-line run must not depend on it.
+   */
+  def runInitializersShielded(interp: Interpreter,
+      initializers: List[ModuleInitializer]): Option[Throwable] =
+    try
+      interp.executor.runModuleInitializers(initializers)
+      None
+    catch case th: Throwable => Some(th)
 
   /** Instantiate `expressionClassName(bindings)` and invoke `evaluate()`. */
   def instantiateAndRun(interp: Interpreter, expressionClassName: String, bindings: Any): Any =

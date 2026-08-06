@@ -24,7 +24,7 @@ import sbt.ScriptedPlugin.autoImport._
 import com.typesafe.tools.mima.plugin.MimaPlugin.autoImport._
 import org.scalajs.sbtplugin.ScalaJSPlugin.autoImport._
 
-import org.scalajs.linker.interface.ESVersion
+import org.scalajs.linker.interface.{CheckedBehavior, ESVersion}
 
 import sbtbuildinfo.BuildInfoPlugin
 import sbtbuildinfo.BuildInfoPlugin.autoImport._
@@ -2694,7 +2694,21 @@ object Build {
       bspEnabled := false,
       scalaJSUseMainModuleInitializer := true,
       Compile / mainClass := Some("dotty.tools.repl.JsonMain"),
-      scalaJSLinkerConfig ~= { _.withESFeatures(_.withESVersion(ESVersion.ES2018)) },
+      // Compliant (not the default Fatal) index/size checks: the sjsir
+      // interpreter implements interpreted array/string accesses with its own
+      // compiled ones (`ArrayInstance.contents(i)`, `String_charAt`), so an
+      // out-of-bounds in *interpreted* code surfaces as this bundle's compiled
+      // check. Fatal would throw UndefinedBehaviorError — a VirtualMachineError,
+      // fatal to `NonFatal`, which escapes `Future {}` and leaves the eval's
+      // reply future pending forever (the wedged-worker class). Compliant throws
+      // the proper NonFatal Java exception instead, and survives fullLinkJS
+      // (`Semantics.optimized` only downgrades Fatal).
+      scalaJSLinkerConfig ~= { _.withESFeatures(_.withESVersion(ESVersion.ES2018))
+        .withSemantics(_
+          .withArrayIndexOutOfBounds(CheckedBehavior.Compliant)
+          .withArrayStores(CheckedBehavior.Compliant)
+          .withNegativeArraySizes(CheckedBehavior.Compliant)
+          .withStringIndexOutOfBounds(CheckedBehavior.Compliant)) },
 
       // Scripted eval tests (the dotty `ScriptedTests` analogue). The driver,
       // `dotty.tools.repl.EvalScriptedTests`, is a Test-config Scala.js main that

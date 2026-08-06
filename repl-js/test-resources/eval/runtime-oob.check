@@ -1,0 +1,27 @@
+# Out-of-bounds and negative-size errors must FAIL the eval, never wedge the
+# worker: the interpreter performs interpreted array/string accesses with its
+# own *compiled* operations, so these surface as compiled exceptions — linked
+# Compliant (not Fatal, whose UndefinedBehaviorError is fatal to `NonFatal` and
+# would leak out of `Future {}` leaving the reply pending forever), and caught
+# by `loadAndRun`'s shielded synchronous path either way. After each failure a
+# control line proves the session is still live.
+>>> {"op":"eval","code":"val a = Array(1, 2, 3)"}
+{"op":"eval","ok":true,"output":"val a: Array[Int] = Array(1, 2, 3)\n","stdout":"","stderr":"","stateVersion":1}
+
+>>> {"op":"eval","code":"a(5)"}
+{"op":"eval","ok":false,"output":"","stdout":"","stderr":"","stateVersion":1,"error":"java.lang.ArrayIndexOutOfBoundsException: 5"}
+
+>>> {"op":"eval","code":"1 + 1"}
+{"op":"eval","ok":true,"output":"val res1: Int = 2\n","stdout":"","stderr":"","stateVersion":2}
+
+>>> {"op":"eval","code":"\"ab\".charAt(9)"}
+{"op":"eval","ok":false,"output":"","stdout":"","stderr":"","stateVersion":2,"error":"java.lang.StringIndexOutOfBoundsException: String index out of range: 9"}
+
+>>> {"op":"eval","code":"\"ab\".substring(0, 5)"}
+{"op":"eval","ok":false,"output":"","stdout":"","stderr":"","stateVersion":2,"error":"java.lang.StringIndexOutOfBoundsException: String index out of range: 5"}
+
+>>> {"op":"eval","code":"val n = -1; new Array[Int](n)"}
+{"op":"eval","ok":false,"output":"","stdout":"","stderr":"","stateVersion":2,"error":"java.lang.NegativeArraySizeException"}
+
+>>> {"op":"eval","code":"a(0) + a(2)"}
+{"op":"eval","ok":true,"output":"val res5: Int = 4\n","stdout":"","stderr":"","stateVersion":3}

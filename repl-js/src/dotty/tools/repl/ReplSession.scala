@@ -231,5 +231,14 @@ object ReplSession:
       if !JSModuleRegistry.register(moduleName, code) then
         Console.err.println(s"warning: ${lib.name}: JS module '$moduleName' is already registered and ignored")
 
-  private def throwableMessage(e: Throwable): String =
-    Option(e.getMessage).filter(_.nonEmpty).getOrElse(e.getClass.getName)
+  private def throwableMessage(e: Throwable): String = e match
+    case js.JavaScriptException(_) =>
+      // Interpreted throwables arrive as raw interpreter values wrapped here;
+      // the message is the instance's own `toString`, class prefix included.
+      Option(e.getMessage).filter(_.nonEmpty).getOrElse(e.getClass.getName)
+    case _ =>
+      // A genuine compiled throwable (e.g. a Compliant-semantics bounds check
+      // hit by the interpreter's own array/string accesses): `getMessage` alone
+      // can be as bare as the offending index, so keep the class name.
+      val cls = e.getClass.getName
+      Option(e.getMessage).filter(_.nonEmpty).fold(cls)(m => s"$cls: $m")

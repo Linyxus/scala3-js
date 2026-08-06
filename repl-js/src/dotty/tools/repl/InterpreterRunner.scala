@@ -82,13 +82,23 @@ class InterpreterRunner:
     b.result()
 
   /** Load a line's freshly-compiled `.sjsir`, then run its wrapper's `replMain`
-   *  (which forces the `object rs$line$N` init — running the user code + render). */
+   *  (which forces the `object rs$line$N` init — running the user code + render).
+   *
+   *  Registration stays on the public `loadIRFiles`, but the run — where the
+   *  user's code actually executes — deliberately does NOT go through
+   *  `interp.runModuleInitializers`: its `Future {…}` body leaks fatal
+   *  throwables (compiled `UndefinedBehaviorError`, a `VirtualMachineError`)
+   *  without completing the future, wedging the eval's reply forever. The
+   *  evaluation core is synchronous anyway, so run it shielded on this stack
+   *  (see [[EvalSupport.runInitializersShielded]]) and settle either way. */
   def loadAndRun(newSjsir: Map[String, Array[Byte]], wrapperClassName: String): Future[Unit] =
-    for
-      _ <- interp.loadIRFiles(toIRFiles(newSjsir))
-      _ <- interp.runModuleInitializers(
-             List(ModuleInitializer.mainMethod(wrapperClassName, "replMain")))
-    yield ()
+    interp.loadIRFiles(toIRFiles(newSjsir)).flatMap { _ =>
+      org.scalajs.sjsirinterpreter.core.EvalSupport.runInitializersShielded(
+        interp,
+        List(ModuleInitializer.mainMethod(wrapperClassName, "replMain"))) match
+        case None => Future.successful(())
+        case Some(th) => Future.failed(th)
+    }
 
   // --- synchronous eval support (dynamic `eval(...)`) -----------------------
   //
